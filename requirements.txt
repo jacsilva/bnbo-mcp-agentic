@@ -1,0 +1,22 @@
+# MCP Agentic RAG - Python Dependencies
+
+# MCP Framework
+mcp>=1.0.0
+
+# Vector Database
+qdrant-client>=1.7.0
+
+# Embeddings and LLM Integration
+llama-index-embeddings-huggingface>=0.1.0
+llama-index-core>=0.10.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+tqdm>=4.66.0
+
+# Additional dependencies for embeddings
+# torch>=2.0.0
+transformers>=4.30.0
+sentence-transformers>=2.2.0
+einops>=0.6.1
