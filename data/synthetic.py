@@ -89,6 +89,30 @@ def gerar_bo() -> dict:
     }
 
 
+DELEGACIAS_POR_ESTADO = {
+    estado: [f"{estado}ª Delegacia {n}" for n in range(1, 6)] for estado in ESTADOS
+}
+
+
+def _gerar_inquerito(bo_id: str, estado: str, data_hora, status_bo: str) -> dict | None:
+    """Gera um inquérito para BOs com status 'investigacao'/'elucidado' (ETL real
+    de matching bo_id↔inquerito ainda não implementada — ver nota no README)."""
+    if status_bo not in ("investigacao", "elucidado"):
+        return None
+    aberto_em = data_hora + timedelta(days=random.randint(1, 5))
+    status_inquerito = "concluido" if status_bo == "elucidado" else random.choice(["em_andamento", "concluido"])
+    concluido_em = aberto_em + timedelta(days=random.randint(10, 180)) if status_inquerito == "concluido" else None
+    return {
+        "bo_id": bo_id,
+        "numero": str(uuid.uuid4())[:8].upper(),
+        "delegacia": random.choice(DELEGACIAS_POR_ESTADO[estado]),
+        "estado": estado,
+        "status": status_inquerito,
+        "aberto_em": aberto_em,
+        "concluido_em": concluido_em,
+    }
+
+
 def popular_base(n: int, batch_size: int = 50) -> None:
     engine = EmbeddingEngine()
     registros = [gerar_bo() for _ in range(n)]
@@ -109,11 +133,22 @@ def popular_base(n: int, batch_size: int = 50) -> None:
                                   %(lat)s, %(lng)s, %(dominio)s, %(natureza)s, %(relato)s,
                                   %(vitima_perfil)s, %(autor_perfil)s, %(instrumento)s,
                                   %(status)s, %(embedding)s)
+                        RETURNING id
                         """,
                         {**registro, "vitima_perfil": __import__("json").dumps(registro["vitima_perfil"]),
                          "autor_perfil": __import__("json").dumps(registro["autor_perfil"]),
                          "embedding": vetor},
                     )
+                    bo_id = cur.fetchone()[0]
+                    inquerito = _gerar_inquerito(bo_id, registro["estado"], registro["data_hora"], registro["status"])
+                    if inquerito:
+                        cur.execute(
+                            """
+                            INSERT INTO inquerito (bo_id, numero, delegacia, estado, status, aberto_em, concluido_em)
+                            VALUES (%(bo_id)s, %(numero)s, %(delegacia)s, %(estado)s, %(status)s, %(aberto_em)s, %(concluido_em)s)
+                            """,
+                            inquerito,
+                        )
             conn.commit()
             print(f"Inseridos {min(i + batch_size, n)}/{n} BOs sintéticos.")
 

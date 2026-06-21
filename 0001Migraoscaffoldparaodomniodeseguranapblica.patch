@@ -1,0 +1,2912 @@
+From b6c1d0b01c0ad09da4c4dc405ba4135acee748d3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 21 Jun 2026 14:42:38 +0000
+Subject: [PATCH] =?UTF-8?q?Migra=20o=20scaffold=20para=20o=20dom=C3=ADnio?=
+ =?UTF-8?q?=20de=20seguran=C3=A7a=20p=C3=BAblica=20(P2=20Linkage=20Crimina?=
+ =?UTF-8?q?l)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implementa a Fatia 0 (fundação) e Fatia 1 (vertical slice P2) do plano:
+PostgreSQL+pgvector/HNSW e Redis substituem Qdrant; embeddings migram para
+multilingual-e5-large com prefixos query:/passage: e cache Redis; gerador
+de BOs sintéticos para dev/teste sem depender de convênios; novas tools MCP
+de linkage criminal (busca por similaridade, explicabilidade, agrupamento
+DBSCAN) e jobs assíncronos via Celery. Remove as tools de demo, incluindo
+execute_shell_command, incompatível com o modelo de least-privilege.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012WCSe1QyviMGCcDrUuiuYb
+---
+ .env.example               |  13 +
+ .gitignore                 |   4 +
+ README.md                  | 497 ++++++++-----------------------------
+ data/__init__.py           |   0
+ data/db.py                 |  35 +++
+ data/schema.sql            |  48 ++++
+ data/synthetic.py          | 126 ++++++++++
+ docker-compose.yml         |  40 ++-
+ jobs/__init__.py           |   0
+ jobs/celery_app.py         |  10 +
+ jobs/tasks.py              |  46 ++++
+ mcp_client.py              | 176 +++----------
+ mcp_client_http.py         | 161 +++---------
+ mcp_server.py              | 206 +++------------
+ ml/__init__.py             |   0
+ ml/embeddings.py           |  56 +++++
+ ml/linkage.py              | 195 +++++++++++++++
+ rag_app.py                 | 244 ------------------
+ requirements.txt           |  28 ++-
+ server/__init__.py         |   0
+ server/tools/__init__.py   |   0
+ server/tools/p2_linkage.py |  83 +++++++
+ server/tools/util_jobs.py  |  55 ++++
+ start_server.sh            |  26 +-
+ test_client.py             | 168 +++----------
+ test_tools.py              | 206 ++++++---------
+ 26 files changed, 1040 insertions(+), 1383 deletions(-)
+ create mode 100644 .env.example
+ create mode 100644 data/__init__.py
+ create mode 100644 data/db.py
+ create mode 100644 data/schema.sql
+ create mode 100644 data/synthetic.py
+ create mode 100644 jobs/__init__.py
+ create mode 100644 jobs/celery_app.py
+ create mode 100644 jobs/tasks.py
+ create mode 100644 ml/__init__.py
+ create mode 100644 ml/embeddings.py
+ create mode 100644 ml/linkage.py
+ delete mode 100644 rag_app.py
+ create mode 100644 server/__init__.py
+ create mode 100644 server/tools/__init__.py
+ create mode 100644 server/tools/p2_linkage.py
+ create mode 100644 server/tools/util_jobs.py
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..e778208
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,13 @@
++# Banco relacional + vetorial
++DATABASE_URL=postgresql://bnbo:bnbo@localhost:5432/bnbo
++
++# Cache / fila de jobs assíncronos (Celery)
++REDIS_URL=redis://localhost:6379/0
++
++# Modelo de embedding (multilingual-e5-large, 768d)
++EMBED_MODEL_NAME=intfloat/multilingual-e5-large
++
++# Transporte do servidor MCP: stdio | sse
++MCP_TRANSPORT=stdio
++MCP_HOST=127.0.0.1
++MCP_PORT=8080
+diff --git a/.gitignore b/.gitignore
+index 1f39a00..fd34032 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -33,6 +33,10 @@ ENV/
+ # Qdrant Storage
+ qdrant_storage/
+ 
++# PostgreSQL / Redis local data
++postgres_data/
++redis_data/
++
+ # IDE
+ .vscode/
+ .idea/
+diff --git a/README.md b/README.md
+index 67ed0bb..fcf9b31 100644
+--- a/README.md
++++ b/README.md
+@@ -1,437 +1,154 @@
+-# MCP-Powered Agentic RAG Application
++# BNBO MCP Agentic — Plataforma de Inteligência em Segurança Pública
+ 
+-Uma aplicação inteligente de Retrieval-Augmented Generation (RAG) que usa o Model Context Protocol (MCP) para decidir automaticamente entre buscar informações em uma base de conhecimento privada ou realizar buscas na web.
++Servidor MCP (Model Context Protocol) sobre uma base nacional de Boletins de
++Ocorrência (BOs), expondo tools de inteligência criminal para a LLM do
++cliente. O servidor é puro: nenhuma LLM roda nele — apenas tools (busca
++vetorial, linkage, jobs assíncronos). Raciocínio e roteamento ficam do lado
++do cliente.
+ 
+-## 🎯 Visão Geral
+-
+-Esta aplicação implementa um agente inteligente que pode:
+-- **Buscar em base de conhecimento privada**: Usa um banco de dados vetorial (Qdrant) para consultar FAQs sobre Python
+-- **Buscar na web**: Usa a API Firecrawl para obter informações atualizadas da internet
+-- **Decidir automaticamente**: O agente escolhe a ferramenta apropriada com base na consulta do usuário
++Esta fatia da implementação entrega o **P2 — Linkage Criminal**: busca de
++ocorrências similares (semântica + estrutural), explicabilidade dos vínculos
++e agrupamento de séries criminais.
+ 
+ ## 🏗️ Arquitetura
+ 
+ ```
+ ┌─────────────┐
+-│   Usuário   │
++│   Cliente   │  (LLM própria do cliente; opcionalmente supervisor LangGraph)
+ └──────┬──────┘
+-       │ Query
+-       ▼
+-┌─────────────────┐
+-│  MCP Cliente    │
+-└──────┬──────────┘
+-       │
++       │ MCP (STDIO/SSE)
+        ▼
+-┌─────────────────────────────────────┐
+-│        MCP Server (Agente)          │
+-│  ┌───────────────────────────────┐  │
+-│  │  Decisão Inteligente de Tool  │  │
+-│  └───────────┬───────────────────┘  │
+-│              │                      │
+-│      ┌───────┴────────┐             │
+-│      ▼                ▼             │
+-│  ┌────────┐      ┌─────────┐        │
+-│  │Vector  │      │   Web   │        │
+-│  │DB Tool │      │Search   │        │
+-│  └────┬───┘      └────┬────┘        │
+-└───────┼───────────────┼─────────────┘
+-        │               │
+-        ▼               ▼
+-   ┌─────────┐    ┌──────────┐
+-   │ Qdrant  │    │Firecrawl │
+-   │  (FAQ)  │    │   API    │
+-   └─────────┘    └──────────┘
+-```
++┌─────────────────────────────────────────────┐
++│           MCP Server (sem LLM)               │
++│  buscar_ocorrencias_similares                │
++│  obter_razoes_similaridade                   │
++│  agrupar_serie_criminal                      │
++│  reindexar_embeddings (assíncrona, Celery)   │
++│  consultar_job_status                        │
++└──────────────┬────────────────┬──────────────┘
++               │                │
++               ▼                ▼
++      ┌─────────────────┐  ┌─────────┐
++      │ PostgreSQL 16    │  │ Redis 7 │
++      │ + pgvector HNSW  │  │ cache + │
++      │ (embeddings 768d)│  │ Celery  │
++      └─────────────────┘  └─────────┘
++```
++
++- **Vetorial/relacional:** PostgreSQL 16 + pgvector (HNSW, cosseno).
++- **Embeddings:** `intfloat/multilingual-e5-large` (768d), prefixos
++  obrigatórios `query:`/`passage:`, cache no Redis por SHA-256 (TTL 24h).
++- **Jobs assíncronos:** Celery + Redis (ex.: reindexação de embeddings).
+ 
+ ## 🚀 Instalação
+ 
+ ### Pré-requisitos
+ 
+-- Python 3.8+
++- Python 3.10+
+ - Docker e Docker Compose
+-- Chave API do Firecrawl (obtenha em [firecrawl.dev](https://www.firecrawl.dev/))
+-
+-### Passo a Passo
+-
+-1. **Clone ou navegue até o diretório do projeto**
+-   ```bash
+-   cd /home/seaddados/projetos/mcp-agentic-rag
+-   ```
+-
+-2. **Configure as variáveis de ambiente**
+-   ```bash
+-   # Edite o arquivo .env e adicione sua chave API
+-   nano .env
+-   ```
+-   
+-   Adicione:
+-   ```
+-   FIRECRAWL_API_KEY=sua_chave_api_aqui
+-   ```
+-
+-3. **Inicie o Qdrant (banco de dados vetorial)**
+-   ```bash
+-   docker-compose up -d
+-   ```
+-   
+-   Verifique se está rodando:
+-   ```bash
+-   curl http://localhost:6334/
+-   ```
+-
+-4. **Crie um ambiente virtual e instale as dependências**
+-   ```bash
+-   python -m venv venv
+-   source venv/bin/activate  # No Linux/Mac
+-   # ou
+-   # venv\Scripts\activate  # No Windows
+-   
+-   pip install -r requirements.txt
+-   ```
+-
+-## 🚀 Como Usar
+-
+-### Método 1: Cliente MCP Oficial (⭐ Recomendado para Produção)
+-
+-```bash
+-cd /home/seaddados/projetos/mcp-agentic-rag
+-source venv/bin/activate
+ 
+-# Terminal 1 - Servidor
+-python3 mcp_server.py
++### Passo a passo
+ 
+-# Terminal 2 - Cliente
+-python3 mcp_client.py
+-```
++```bash
++cp .env.example .env   # ajuste se necessário
+ 
+-**Vantagens:**
+-- ✅ Usa protocolo MCP oficial
+-- ✅ Comunicação STDIO nativa
+-- ✅ Lista ferramentas automaticamente
+-- ✅ Testa todas as 3 ferramentas (FAQ, Web Search, Shell)
++# 1. Subir PostgreSQL (pgvector) + Redis
++docker compose up -d
+ 
+-### Método 2: Testes Diretos (🔧 Recomendado para Desenvolvimento)
++# 2. Ambiente virtual e dependências
++python3 -m venv venv
++source venv/bin/activate
++pip install -r requirements.txt
+ 
+-```bash
+-python3 test_tools.py
++# 3. Popular a base com BOs sintéticos
++python3 -m data.synthetic --n 500
+ ```
+ 
+-**Vantagens:**
+-- ✅ Mais rápido
+-- ✅ Não precisa de servidor
+-- ✅ Testa lógica diretamente
+-- ✅ Ideal para debug
+-
+-### 🔧 Configuração de Transport
++## 🚀 Como usar
+ 
+-O servidor suporta dois modos de transporte:
++### Servidor
+ 
+-#### STDIO (Padrão)
+ ```bash
++# STDIO (padrão)
+ python3 mcp_server.py
+-# Usa STDIO para clientes MCP oficiais
+-```
+ 
+-#### SSE (HTTP)
+-```bash
++# SSE/HTTP
+ MCP_TRANSPORT=sse python3 mcp_server.py
+-# Usa SSE para testes HTTP
+-
+-# Em outro terminal
+-python3 mcp_client_http.py
+ ```
+ 
+-### Saída do Servidor
+-
+-**Modo STDIO:**
+-```
+-============================================================
+-MCP AGENTIC RAG APPLICATION
+-============================================================
+-
+-Initializing FAQ Engine and setting up Qdrant collection...
+-Embedding model loaded. Vector dimension: 384
+-Connected to Qdrant.
+-
+-============================================================
+-Starting MCP server
+-============================================================
+-
+-Available Tools:
+-  1. python_faq_retrieval_tool - Search Python FAQ knowledge base
+-  2. firecrawl_web_search_tool - Search the web for information
+-  3. execute_shell_command - Execute shell commands
++### Worker Celery (necessário para `reindexar_embeddings`)
+ 
+-✓ Transport: STDIO
+-Server is ready to accept STDIO connections!
+-```
+-
+-**Modo HTTP/SSE:**
+-```
+-✓ Transport: SSE (HTTP)
+-✓ Server URL: http://127.0.0.1:8080/sse
+-Server is ready to accept HTTP connections!
+-INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+-```
+-
+-## 🎯 Diferenças Entre os Clientes
+-
+-| Cliente | Protocolo | SDK | Uso | Vantagem |
+-|---------|-----------|-----|-----|----------|
+-| **mcp_client.py** ⭐ | MCP via STDIO | MCP Python SDK oficial | Produção, integração real | Protocolo nativo, robusto |
+-| **mcp_client_http.py** 🌐 | HTTP/SSE | MCP Python SDK (SSE) | Testes, debugging | Fácil inspeção HTTP |
+-| **test_tools.py** 🔧 | Import direto | Nenhum | Desenvolvimento rápido | Simples, sem overhead |
+-| **test_client.py** ⚠️ | HTTP/SSE (legado) | Requests | Não recomendado | Protocolo SSE complexo |
+-
+-## 📁 Estrutura do Projeto
+-
+-```
+-mcp-agentic-rag/
+-├── mcp_server.py          # Servidor MCP (STDIO/SSE)
+-├── mcp_client.py          # ⭐ Cliente MCP oficial (STDIO)
+-├── mcp_client_http.py     # 🌐 Cliente MCP HTTP (SSE)
+-├── rag_app.py             # Pipeline RAG com Qdrant
+-├── test_tools.py          # Testes diretos das ferramentas
+-├── test_client.py         # Cliente HTTP legado
+-├── .env                   # Variáveis de ambiente
+-├── requirements.txt       # Dependências Python
+-├── docker-compose.yml     # Configuração Qdrant
+-├── README.md              # Esta documentação
+-├── TROUBLESHOOTING.md     # Guia de resolução de problemas
+-└── start_server.sh        # Script de inicialização
+-```
+-
+-**Exemplo 1: Consulta sobre Python (usa Vector DB)**
+ ```bash
+-curl -X POST http://127.0.0.1:8080/mcp \
+--H "Content-Type: application/json" \
+--d '{
+-  "messages": [
+-    {
+-      "role": "user",
+-      "content": "Can you explain list comprehensions in Python?"
+-    }
+-  ]
+-}'
+-```
+-
+-**Exemplo 2: Consulta geral (usa Web Search)**
+-```bash
+-curl -X POST http://127.0.0.1:8080/mcp \
+--H "Content-Type: application/json" \
+--d '{
+-  "messages": [
+-    {
+-      "role": "user",
+-      "content": "What is the new Polars DataFrame library?"
+-    }
+-  ]
+-}'
+-```
+-
+-## 🛠️ Componentes
+-
+-### 1. RAG Pipeline (`rag_app.py`)
+-
+-- **FAQEngine**: Classe principal para embeddings e busca vetorial
+-- **PYTHON_FAQ_TEXT**: Base de conhecimento com FAQs sobre Python
+-- **batch_generator**: Processamento eficiente em lotes
+-
+-### 2. MCP Server (`mcp_server.py`)
+-
+-Servidor que implementa três ferramentas MCP:
+-
+-- **python_faq_retrieval_tool**: Busca na base de conhecimento privada (Qdrant)
+-- **firecrawl_web_search_tool**: Busca informações na web via Firecrawl API
+-- **execute_shell_command**: Executa comandos shell no workspace
+-
+-**Suporte a múltiplos transportes:**
+-- **STDIO** (padrão): Para integração com clientes MCP oficiais
+-- **HTTP/SSE**: Para testes e debugging via HTTP
+-
+-### 3. MCP Clients
+-
+-#### `mcp_client.py` - Cliente STDIO
+-
+-Cliente oficial usando transporte STDIO. Inclui:
+-- `call_tool()`: Função genérica para ferramentas com parâmetro `query`
+-- `call_tool_cmd()`: Função especializada para `execute_shell_command` (usa parâmetro `cmd`)
+-- `list_available_tools()`: Lista todas as ferramentas disponíveis
+-
+-#### `mcp_client_http.py` - Cliente HTTP/SSE
+-
+-Cliente HTTP usando Server-Sent Events. Mesmas funcionalidades do cliente STDIO, mas via HTTP.
+-
+-**Exemplo de uso da função `call_tool_cmd`:**
+-```python
+-# Para ferramentas que usam 'query' (FAQ e Web Search)
+-await call_tool(session, "python_faq_retrieval_tool", "What are decorators?")
+-
+-# Para ferramentas que usam 'cmd' (Shell Commands)
+-await call_tool_cmd(session, "execute_shell_command", "ls -la")
++celery -A jobs.celery_app worker --loglevel=info
+ ```
+ 
+-## 🔧 Configuração
+-
+-### Variáveis de Ambiente (`.env`)
++### Clientes de teste
+ 
+ ```bash
+-# Obrigatório para busca web
+-FIRECRAWL_API_KEY=sua_chave_aqui
++# Testes diretos da lógica (sem MCP/sem servidor)
++python3 test_client.py
+ 
+-# Opcional (para futuras melhorias)
+-OPENAI_API_KEY=sk-...
+-```
++# Testes das tools (assume servidor SSE rodando)
++python3 test_tools.py
+ 
+-### Configurações do Servidor (`mcp_server.py`)
++# Cliente MCP oficial via STDIO
++python3 mcp_client.py
+ 
+-```python
+-QDRANT_URL = "http://localhost:6333"
+-COLLECTION_NAME = "python_faq_collection"
+-HOST = "127.0.0.1"
+-PORT = 8080
++# Cliente MCP via SSE/HTTP (requer MCP_TRANSPORT=sse)
++python3 mcp_client_http.py
+ ```
+ 
+-## 📊 Interface Web do Qdrant
+-
+-Acesse o dashboard do Qdrant em: http://localhost:6334/
+-
+-Aqui você pode:
+-- Visualizar coleções
+-- Inspecionar vetores
+-- Monitorar o desempenho
+-
+-## 🧪 Testes
+-
+-Ambos os clientes (`mcp_client.py` e `mcp_client_http.py`) incluem 5 casos de teste:
+-
+-1. **List Comprehensions** → Python FAQ Tool (Vector DB)
+-2. **Python Decorators** → Python FAQ Tool (Vector DB)
+-3. **== vs is** → Python FAQ Tool (Vector DB)
+-4. **Polars Library** → Web Search Tool
+-5. **List files (ls -la)** → Shell Command Tool
+-
+-**Executar testes:**
+-```bash
+-# Modo STDIO
+-python mcp_client.py
+-
+-# Modo HTTP/SSE (requer servidor em modo SSE)
+-python mcp_client_http.py
+-```
++## 🛠️ Tools expostas (P2 — Linkage Criminal)
++
++| Tool | Tipo | Descrição |
++|---|---|---|
++| `buscar_ocorrencias_similares` | atômica | ANN por `bo_id` ou `texto_livre`; reranking semântico + estrutural |
++| `obter_razoes_similaridade` | atômica | Explicabilidade: dimensões e pesos que vincularam dois BOs |
++| `agrupar_serie_criminal` | composta | DBSCAN sobre candidatos similares, com score de coesão |
++| `reindexar_embeddings` | assíncrona (Celery) | Recalcula embeddings de todos os BOs |
++| `consultar_job_status` | transversal | Polling de status de jobs assíncronos por `job_id` |
++
++## 📁 Estrutura do projeto
++
++```
++bnbo-mcp-agentic/
++├── mcp_server.py          # Servidor MCP (STDIO/SSE) — registra as tools do domínio
++├── mcp_client.py          # Cliente MCP oficial (STDIO)
++├── mcp_client_http.py     # Cliente MCP via SSE/HTTP
++├── test_client.py         # Testes diretos da lógica (ml.linkage)
++├── test_tools.py          # Testes das funções *_tool do servidor
++├── server/
++│   └── tools/
++│       ├── p2_linkage.py  # Tools MCP do P2 (wrappers sobre ml.linkage)
++│       └── util_jobs.py   # Tools transversais de jobs assíncronos
++├── ml/
++│   ├── embeddings.py      # e5-large + prefixos query:/passage: + cache Redis
++│   └── linkage.py         # Busca vetorial, reranking, explicabilidade, DBSCAN
++├── jobs/
++│   ├── celery_app.py      # Configuração do Celery (broker/backend Redis)
++│   └── tasks.py           # Task reindexar_embeddings
++├── data/
++│   ├── db.py               # Pool de conexões PostgreSQL/pgvector
++│   ├── schema.sql           # Tabela `bo` particionada, índice HNSW
++│   └── synthetic.py          # Gerador de BOs sintéticos para dev/teste
++├── docker-compose.yml      # PostgreSQL 16 (pgvector) + Redis 7
++├── requirements.txt
++└── start_server.sh
++```
++
++> Nota de simplificação (Fatia 0): a tabela `bo` é particionada por RANGE em
++> `ano` (não pelo composto `(estado, ano)` do modelo completo); `estado` fica
++> indexado em vez de particionado. Revisitar nas fatias de generalização.
+ 
+ ## 🐛 Troubleshooting
+ 
+-### Erro: "FIRECRAWL_API_KEY environment variable is not set"
+-- Verifique se o arquivo `.env` existe e contém a chave API
+-- Certifique-se de que o arquivo está no mesmo diretório que `mcp_server.py`
+-
+-### Erro: "Error connecting to Qdrant"
+-- Verifique se o Docker está rodando: `docker ps`
+-- Inicie o Qdrant: `docker-compose up -d`
+-- Verifique os logs: `docker-compose logs qdrant`
++### "connection refused" ao conectar no PostgreSQL/Redis
++- Verifique se os containers estão rodando: `docker compose ps`
++- Suba os serviços: `docker compose up -d`
+ 
+ ### Modelo de embedding demora para carregar
+-- Na primeira execução, o modelo (~500MB) será baixado
+-- Execuções subsequentes serão mais rápidas (modelo em cache)
+-
+-## 📚 Recursos Adicionais
+-
+-- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+-- [Qdrant Documentation](https://qdrant.tech/documentation/)
+-- [Firecrawl API](https://www.firecrawl.dev/)
+-- [LlamaIndex](https://docs.llamaindex.ai/)
+-
+-## ✨ Melhorias Implementadas
+-
+-Durante o desenvolvimento, os seguintes problemas foram resolvidos:
+-
+-| Problema | Solução |
+-|----------|---------|
+-| ⏱️ Timeout HuggingFace | Modelo menor (384 dim) `all-MiniLM-L6-v2` |
+-| 🔢 Vector dimension mismatch | Coleção Qdrant recriada com dimensão correta |
+-| ⚠️ Qdrant API deprecated | Atualizado com fallback para compatibilidade |
+-| 🔌 Transport incompatível | STDIO + SSE suportados simultaneamente |
+-| ❌ Cliente HTTP falho | Cliente MCP oficial criado com SDK ✅ |
+-| 🛠️ Shell commands | Nova ferramenta `execute_shell_command` adicionada |
+-
+-## 🎓 Próximos Passos Sugeridos
+-
+-### 1. Adicionar Mais FAQs
+-
+-```bash
+-# Edite PYTHON_FAQ_TEXT em rag_app.py
+-# Execute para recriar a coleção:
+-python3 -c "from rag_app import FAQEngine, PYTHON_FAQ_TEXT; \
+-            engine = FAQEngine('http://localhost:6333', 'python_faq_collection'); \
+-            engine.setup_collection(PYTHON_FAQ_TEXT)"
+-```
+-
+-### 2. Integrar com Claude Desktop
+-
+-Adicione ao arquivo de configuração do Claude Desktop:
+-
+-```json
+-{
+-  "mcpServers": {
+-    "python-faq": {
+-      "command": "python3",
+-      "args": ["mcp_server.py"],
+-      "cwd": "/home/seaddados/projetos/mcp-agentic-rag",
+-      "env": {
+-        "FIRECRAWL_API_KEY": "sua_chave_aqui"
+-      }
+-    }
+-  }
+-}
+-```
+-
+-### 3. Adicionar Novas Ferramentas MCP
+-
+-Exemplo de como criar uma nova ferramenta:
+-
+-```python
+-@mcp_server.tool()
+-def nova_ferramenta(parametro: str) -> str:
+-    """
+-    Descrição detalhada da ferramenta.
+-    Use esta ferramenta quando...
+-    
+-    Args:
+-        parametro: Descrição do parâmetro
+-        
+-    Returns:
+-        Resultado da operação
+-    """
+-    # Implementação
+-    resultado = processar(parametro)
+-    return resultado
+-```
+-
+-### 4. Expandir Base de Conhecimento
+-
+-- Adicionar documentação de outras linguagens (JavaScript, Go, Rust)
+-- Incluir best practices e design patterns
+-- Adicionar troubleshooting guides específicos
+-
+-### 5. Melhorar Busca Web
+-
+-- Implementar cache de resultados
+-- Adicionar mais fontes de busca (DuckDuckGo, Brave Search)
+-- Filtrar resultados por relevância
+-
+-## 🤝 Contribuindo
+-
+-Sinta-se à vontade para:
+-- Adicionar mais FAQs à base de conhecimento
+-- Implementar novas ferramentas MCP
+-- Melhorar a lógica de seleção de ferramentas
+-- Adicionar testes adicionais
+-
+-## 📝 Licença
+-
+-Este projeto é baseado no artigo "Building MCP-Powered Agentic RAG Application" de Youssef Hosni.
+-
+----
++- `multilingual-e5-large` é ~2GB; na primeira execução o download pode levar
++  alguns minutos. Execuções subsequentes usam o cache local do HuggingFace.
+ 
+-**Desenvolvido com ❤️ usando Model Context Protocol**
++### `reindexar_embeddings` fica em `PENDING`
++- Confirme que há um worker Celery rodando: `celery -A jobs.celery_app worker`
+diff --git a/data/__init__.py b/data/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/data/db.py b/data/db.py
+new file mode 100644
+index 0000000..e82443b
+--- /dev/null
++++ b/data/db.py
+@@ -0,0 +1,35 @@
++"""
++Camada de acesso a dados — pool de conexões PostgreSQL/pgvector.
++"""
++
++import os
++from contextlib import contextmanager
++from typing import Generator
++
++from psycopg_pool import ConnectionPool
++from pgvector.psycopg import register_vector
++
++DATABASE_URL = os.getenv(
++    "DATABASE_URL", "postgresql://bnbo:bnbo@localhost:5432/bnbo"
++)
++
++_pool: ConnectionPool | None = None
++
++
++def get_pool() -> ConnectionPool:
++    global _pool
++    if _pool is None:
++        _pool = ConnectionPool(
++            DATABASE_URL,
++            min_size=1,
++            max_size=10,
++            configure=register_vector,
++        )
++    return _pool
++
++
++@contextmanager
++def get_connection() -> Generator:
++    pool = get_pool()
++    with pool.connection() as conn:
++        yield conn
+diff --git a/data/schema.sql b/data/schema.sql
+new file mode 100644
+index 0000000..ee91dca
+--- /dev/null
++++ b/data/schema.sql
+@@ -0,0 +1,48 @@
++-- Schema da Fundação P2 (Fatia 0) — base nacional de Boletins de Ocorrência (BOs)
++--
++-- Simplificação assumida nesta fatia: particionamento por RANGE em `ano` apenas
++-- (em vez do composto `(estado, ano)` do modelo completo), para manter a criação
++-- de partições estática e simples no slice inicial. `estado` fica indexado em
++-- vez de particionado. Revisar quando as Fatias 2+ generalizarem a ingestão.
++
++CREATE EXTENSION IF NOT EXISTS vector;
++CREATE EXTENSION IF NOT EXISTS pgcrypto;
++
++CREATE TABLE IF NOT EXISTS bo (
++    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    bo_numero       TEXT,
++    estado          TEXT NOT NULL,
++    municipio       TEXT,
++    data_hora       TIMESTAMPTZ NOT NULL,
++    ano             INTEGER NOT NULL GENERATED ALWAYS AS (EXTRACT(YEAR FROM data_hora)::INTEGER) STORED,
++    lat             DOUBLE PRECISION,
++    lng             DOUBLE PRECISION,
++    hex_id_res8     TEXT,
++    dominio         TEXT NOT NULL,
++    natureza        TEXT NOT NULL,
++    relato          TEXT NOT NULL,
++    vitima_perfil   JSONB,
++    autor_perfil    JSONB,
++    instrumento     TEXT,
++    status          TEXT NOT NULL DEFAULT 'registrado',
++    inquerito_id    UUID,
++    embedding       vector(768),
++    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
++) PARTITION BY RANGE (ano);
++
++CREATE TABLE IF NOT EXISTS bo_2023 PARTITION OF bo FOR VALUES FROM (2023) TO (2024);
++CREATE TABLE IF NOT EXISTS bo_2024 PARTITION OF bo FOR VALUES FROM (2024) TO (2025);
++CREATE TABLE IF NOT EXISTS bo_2025 PARTITION OF bo FOR VALUES FROM (2025) TO (2026);
++CREATE TABLE IF NOT EXISTS bo_2026 PARTITION OF bo FOR VALUES FROM (2026) TO (2027);
++CREATE TABLE IF NOT EXISTS bo_default PARTITION OF bo DEFAULT;
++
++CREATE INDEX IF NOT EXISTS idx_bo_estado ON bo (estado);
++CREATE INDEX IF NOT EXISTS idx_bo_dominio_data ON bo (dominio, data_hora);
++CREATE INDEX IF NOT EXISTS idx_bo_hex ON bo (hex_id_res8);
++
++-- Índice HNSW para busca vetorial (cosseno), conforme decisão fixada.
++CREATE INDEX IF NOT EXISTS idx_bo_embedding_hnsw ON bo
++    USING hnsw (embedding vector_cosine_ops)
++    WITH (ef_construction = 200);
++
++COMMENT ON COLUMN bo.embedding IS 'Embedding multilingual-e5-large (768d) do relato, prefixo passage: aplicado na ingestão.';
+diff --git a/data/synthetic.py b/data/synthetic.py
+new file mode 100644
+index 0000000..aa71149
+--- /dev/null
++++ b/data/synthetic.py
+@@ -0,0 +1,126 @@
++"""
++Gerador de Boletins de Ocorrência sintéticos.
++
++Permite desenvolver e testar o slice do P2 (Linkage Criminal) sem depender
++de convênios com dados reais. Gera relatos plausíveis por natureza, com
++coordenadas aproximadas, e popula a tabela `bo` com embeddings já calculados.
++"""
++
++import argparse
++import random
++import uuid
++from datetime import datetime, timedelta
++
++from data.db import get_connection
++from ml.embeddings import EmbeddingEngine
++
++ESTADOS = ["SP", "RJ", "MG", "BA", "RS"]
++
++NATUREZAS = {
++    "furto": [
++        "Vítima relatou que teve {item} furtado enquanto estava em {local}.",
++        "Subtração de {item} ocorrida em {local}, sem uso de violência.",
++    ],
++    "roubo": [
++        "Autor abordou a vítima em {local} e, mediante grave ameaça, subtraiu {item}.",
++        "Roubo de {item} próximo a {local}, autor portava {instrumento}.",
++    ],
++    "lesao_corporal": [
++        "Discussão entre vítima e autor em {local} resultou em agressão física.",
++        "Vítima foi agredida com {instrumento} durante desentendimento em {local}.",
++    ],
++    "ameaca": [
++        "Autor ameaçou a vítima verbalmente em {local} após discussão.",
++        "Vítima relatou receber ameaças repetidas do autor, conhecido, em {local}.",
++    ],
++}
++
++ITENS = ["celular", "bicicleta", "carteira", "notebook", "veículo", "bolsa"]
++LOCAIS = ["via pública", "residência da vítima", "estabelecimento comercial", "transporte público"]
++INSTRUMENTOS = ["faca", "arma de fogo", "objeto contundente", None]
++
++DOMINIO_POR_NATUREZA = {
++    "furto": "patrimonio",
++    "roubo": "patrimonio",
++    "lesao_corporal": "pessoa",
++    "ameaca": "pessoa",
++}
++
++# Bounding boxes aproximados (lat_min, lat_max, lng_min, lng_max) por estado.
++BBOX_ESTADO = {
++    "SP": (-24.5, -20.0, -50.0, -44.0),
++    "RJ": (-23.5, -20.5, -44.5, -40.5),
++    "MG": (-22.5, -14.0, -51.0, -39.5),
++    "BA": (-18.5, -8.5, -46.5, -37.0),
++    "RS": (-33.5, -27.0, -57.5, -49.5),
++}
++
++
++def _gerar_relato(natureza: str) -> tuple[str, str | None]:
++    template = random.choice(NATUREZAS[natureza])
++    item = random.choice(ITENS)
++    local = random.choice(LOCAIS)
++    instrumento = random.choice(INSTRUMENTOS)
++    relato = template.format(item=item, local=local, instrumento=instrumento or "objeto não identificado")
++    return relato, instrumento
++
++
++def gerar_bo() -> dict:
++    estado = random.choice(ESTADOS)
++    lat_min, lat_max, lng_min, lng_max = BBOX_ESTADO[estado]
++    natureza = random.choice(list(NATUREZAS.keys()))
++    relato, instrumento = _gerar_relato(natureza)
++    data_hora = datetime.now() - timedelta(days=random.randint(0, 730), hours=random.randint(0, 23))
++
++    return {
++        "bo_numero": str(uuid.uuid4())[:8].upper(),
++        "estado": estado,
++        "municipio": f"Municipio-{random.randint(1, 50)}",
++        "data_hora": data_hora,
++        "lat": round(random.uniform(lat_min, lat_max), 6),
++        "lng": round(random.uniform(lng_min, lng_max), 6),
++        "dominio": DOMINIO_POR_NATUREZA[natureza],
++        "natureza": natureza,
++        "relato": relato,
++        "vitima_perfil": {"genero": random.choice(["F", "M"]), "faixa_etaria": random.choice(["18-25", "26-40", "41-60", "60+"])},
++        "autor_perfil": {"vinculo": random.choice(["desconhecido", "conhecido", "familiar"])},
++        "instrumento": instrumento,
++        "status": random.choice(["registrado", "investigacao", "elucidado"]),
++    }
++
++
++def popular_base(n: int, batch_size: int = 50) -> None:
++    engine = EmbeddingEngine()
++    registros = [gerar_bo() for _ in range(n)]
++
++    with get_connection() as conn:
++        for i in range(0, len(registros), batch_size):
++            batch = registros[i : i + batch_size]
++            embeddings = engine.embed_passages([r["relato"] for r in batch])
++            with conn.cursor() as cur:
++                for registro, vetor in zip(batch, embeddings):
++                    cur.execute(
++                        """
++                        INSERT INTO bo (
++                            bo_numero, estado, municipio, data_hora, lat, lng,
++                            dominio, natureza, relato, vitima_perfil, autor_perfil,
++                            instrumento, status, embedding
++                        ) VALUES (%(bo_numero)s, %(estado)s, %(municipio)s, %(data_hora)s,
++                                  %(lat)s, %(lng)s, %(dominio)s, %(natureza)s, %(relato)s,
++                                  %(vitima_perfil)s, %(autor_perfil)s, %(instrumento)s,
++                                  %(status)s, %(embedding)s)
++                        """,
++                        {**registro, "vitima_perfil": __import__("json").dumps(registro["vitima_perfil"]),
++                         "autor_perfil": __import__("json").dumps(registro["autor_perfil"]),
++                         "embedding": vetor},
++                    )
++            conn.commit()
++            print(f"Inseridos {min(i + batch_size, n)}/{n} BOs sintéticos.")
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description="Gerador de BOs sintéticos.")
++    parser.add_argument("--n", type=int, default=500, help="Número de BOs a gerar.")
++    parser.add_argument("--batch-size", type=int, default=50)
++    args = parser.parse_args()
++    popular_base(args.n, args.batch_size)
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 9a3be44..93d545f 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,19 +1,35 @@
+ version: '3.8'
+ 
+ services:
+-  qdrant:
+-    image: qdrant/qdrant:latest
+-    container_name: mcp-qdrant
++  postgres:
++    image: pgvector/pgvector:pg16
++    container_name: bnbo-postgres
+     ports:
+-      - "6333:6333"  # API port
+-      - "6334:6334"  # Web UI port
+-    volumes:
+-      - ./qdrant_storage:/qdrant/storage
++      - "5432:5432"
+     environment:
+-      - QDRANT__SERVICE__GRPC_PORT=6334
++      - POSTGRES_USER=bnbo
++      - POSTGRES_PASSWORD=bnbo
++      - POSTGRES_DB=bnbo
++    volumes:
++      - ./postgres_data:/var/lib/postgresql/data
++      - ./data/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
++    restart: unless-stopped
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U bnbo -d bnbo"]
++      interval: 10s
++      timeout: 5s
++      retries: 5
++
++  redis:
++    image: redis:7
++    container_name: bnbo-redis
++    ports:
++      - "6379:6379"
++    volumes:
++      - ./redis_data:/data
+     restart: unless-stopped
+     healthcheck:
+-      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+-      interval: 30s
+-      timeout: 10s
+-      retries: 3
++      test: ["CMD", "redis-cli", "ping"]
++      interval: 10s
++      timeout: 5s
++      retries: 5
+diff --git a/jobs/__init__.py b/jobs/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/jobs/celery_app.py b/jobs/celery_app.py
+new file mode 100644
+index 0000000..5575ec6
+--- /dev/null
++++ b/jobs/celery_app.py
+@@ -0,0 +1,10 @@
++"""Configuração do Celery — broker/backend Redis para jobs assíncronos do MCP server."""
++
++import os
++
++from celery import Celery
++
++REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
++
++celery_app = Celery("bnbo_jobs", broker=REDIS_URL, backend=REDIS_URL)
++celery_app.conf.task_track_started = True
+diff --git a/jobs/tasks.py b/jobs/tasks.py
+new file mode 100644
+index 0000000..4231267
+--- /dev/null
++++ b/jobs/tasks.py
+@@ -0,0 +1,46 @@
++"""Tasks Celery — reindexação de embeddings e consulta de status de jobs."""
++
++from jobs.celery_app import celery_app
++from data.db import get_connection
++from ml.embeddings import EmbeddingEngine
++
++
++@celery_app.task(bind=True, name="jobs.reindexar_embeddings")
++def reindexar_embeddings(self, batch_size: int = 100):
++    """Recalcula embeddings de todos os BOs (ex.: após troca de modelo de embedding)."""
++    engine = EmbeddingEngine()
++    total = 0
++
++    with get_connection() as conn:
++        with conn.cursor() as cur:
++            cur.execute("SELECT count(*) FROM bo")
++            total_rows = cur.fetchone()[0]
++
++        offset = 0
++        while True:
++            with conn.cursor() as cur:
++                cur.execute(
++                    "SELECT id, relato FROM bo ORDER BY id LIMIT %s OFFSET %s",
++                    (batch_size, offset),
++                )
++                rows = cur.fetchall()
++            if not rows:
++                break
++
++            ids = [r[0] for r in rows]
++            relatos = [r[1] for r in rows]
++            vetores = engine.embed_passages(relatos)
++
++            with conn.cursor() as cur:
++                for bo_id, vetor in zip(ids, vetores):
++                    cur.execute(
++                        "UPDATE bo SET embedding = %s WHERE id = %s",
++                        (vetor, bo_id),
++                    )
++            conn.commit()
++
++            total += len(rows)
++            offset += batch_size
++            self.update_state(state="PROGRESS", meta={"processados": total, "total": total_rows})
++
++    return {"status": "concluido", "processados": total}
+diff --git a/mcp_client.py b/mcp_client.py
+index a5788eb..396c896 100644
+--- a/mcp_client.py
++++ b/mcp_client.py
+@@ -1,200 +1,94 @@
+ """
+-Official MCP Client for Agentic RAG Application
+-Uses the MCP Python SDK to properly communicate with the MCP server.
++Cliente MCP oficial (STDIO) — harness de teste para as tools do P2 Linkage Criminal.
+ """
+ 
+ import asyncio
++import json
++
+ from mcp import ClientSession, StdioServerParameters
+ from mcp.client.stdio import stdio_client
+ 
+ 
+-async def call_tool(session: ClientSession, tool_name: str, query: str):
+-    """
+-    Call an MCP tool with a query.
+-    
+-    Args:
+-        session: Active MCP client session
+-        tool_name: Name of the tool to call
+-        query: Query string to send to the tool
+-    """
++async def call_tool(session: ClientSession, tool_name: str, arguments: dict):
+     print(f"\n{'=' * 70}")
+     print(f"Calling tool: {tool_name}")
+-    print(f"Query: {query}")
++    print(f"Arguments: {arguments}")
+     print('=' * 70)
+-    
+-    try:
+-        result = await session.call_tool(tool_name, arguments={"query": query})
+-        
+-        print("\n✓ SUCCESS")
+-        print("\nResponse:")
+-        
+-        # Extract and display the content
+-        if hasattr(result, 'content') and result.content:
+-            for item in result.content:
+-                if hasattr(item, 'text'):
+-                    # Truncate long responses for readability
+-                    text = item.text
+-                    if len(text) > 500:
+-                        print(text[:500] + "...\n")
+-                    else:
+-                        print(text + "\n")
+-        else:
+-            print(result)
+-            
+-    except Exception as e:
+-        print(f"\n✗ ERROR: {e}")
+-    
+-    print('=' * 70)
+-
+ 
+-async def call_tool_cmd(session: ClientSession, tool_name: str, cmd: str):
+-    """
+-    Call an MCP tool that executes shell commands.
+-    Adapted specifically for the execute_shell_command tool.
+-    
+-    Args:
+-        session: Active MCP client session
+-        tool_name: Name of the tool to call (typically 'execute_shell_command')
+-        cmd: Shell command string to execute
+-    """
+-    print(f"\n{'=' * 70}")
+-    print(f"Calling tool: {tool_name}")
+-    print(f"Command: {cmd}")
+-    print('=' * 70)
+-    
+     try:
+-        result = await session.call_tool(tool_name, arguments={"cmd": cmd})
+-        
+-        print("\n✓ SUCCESS")
+-        print("\nCommand Output:")
+-        
+-        # Extract and display the content
++        result = await session.call_tool(tool_name, arguments=arguments)
++        print("\n✓ SUCCESS\n")
+         if hasattr(result, 'content') and result.content:
+             for item in result.content:
+                 if hasattr(item, 'text'):
+-                    # Display full output for shell commands (usually not too long)
+-                    text = item.text
+-                    if len(text) > 1000:
+-                        print(text[:1000] + "...\n")
+-                    else:
+-                        print(text + "\n")
++                    try:
++                        parsed = json.loads(item.text)
++                        print(json.dumps(parsed, indent=2, ensure_ascii=False)[:1500])
++                    except json.JSONDecodeError:
++                        print(item.text[:1500])
+         else:
+             print(result)
+-            
+     except Exception as e:
+         print(f"\n✗ ERROR: {e}")
+-    
++
+     print('=' * 70)
+ 
+ 
+ async def list_available_tools(session: ClientSession):
+-    """List all available tools from the MCP server."""
+     print("\n" + "=" * 70)
+     print("AVAILABLE MCP TOOLS")
+     print("=" * 70)
+-    
+     try:
+         tools = await session.list_tools()
+-        
+         if tools and hasattr(tools, 'tools'):
+             for i, tool in enumerate(tools.tools, 1):
+                 print(f"\n{i}. {tool.name}")
+-                if hasattr(tool, 'description') and tool.description:
+-                    print(f"   Description: {tool.description}")
+-                if hasattr(tool, 'inputSchema'):
+-                    print(f"   Input: {tool.inputSchema}")
++                if tool.description:
++                    print(f"   Description: {tool.description.strip().splitlines()[0]}")
+         else:
+             print("No tools found")
+-            
+     except Exception as e:
+         print(f"Error listing tools: {e}")
+-    
+     print("=" * 70)
+ 
+ 
+ async def main():
+-    """Main function to run MCP client tests."""
+-    
+     print("\n" + "=" * 70)
+-    print("MCP OFFICIAL CLIENT - AGENTIC RAG")
++    print("MCP CLIENT (STDIO) - P2 LINKAGE CRIMINAL")
+     print("=" * 70)
+-    print("\nConnecting to MCP server via STDIO...")
+-    
+-    # Server parameters - using stdio transport
+-    server_params = StdioServerParameters(
+-        command="python3",
+-        args=["mcp_server.py"],
+-        env=None
+-    )
+-    
++
++    server_params = StdioServerParameters(command="python3", args=["mcp_server.py"], env=None)
++
+     try:
+         async with stdio_client(server_params) as (read, write):
+             async with ClientSession(read, write) as session:
+-                # Initialize the session
+                 await session.initialize()
+-                
+                 print("✓ Connected to MCP server!\n")
+-                
+-                # List available tools
++
+                 await list_available_tools(session)
+-                
+-                # Test Case 1: Python FAQ - List Comprehensions
+-                print("\n\n### TEST 1: Python FAQ - List Comprehensions ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "Can you explain list comprehensions in Python?"
+-                )
+-                
+-                # Test Case 2: Python FAQ - Decorators
+-                print("\n\n### TEST 2: Python FAQ - Decorators ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "What are Python decorators?"
+-                )
+-                
+-                # Test Case 3: Python FAQ - == vs is
+-                print("\n\n### TEST 3: Python FAQ - == vs is ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "What is the difference between == and is in Python?"
+-                )
+-                
+-                # Test Case 4: Web Search - Polars
+-                print("\n\n### TEST 4: Web Search - Polars DataFrame ###")
+-                await call_tool(
+-                    session,
+-                    "firecrawl_web_search_tool",
+-                    "What is the Polars DataFrame library?"
+-                )
+-
+-                # Test Case 5: Shell Command - List files
+-                print("\n\n### TEST 5: Shell Command - List files ###")
+-                await call_tool_cmd(
+-                    session,
+-                    "execute_shell_command",
+-                    "ls -la"
+-                )
+-                
++
++                print("\n\n### TEST 1: Busca por texto livre ###")
++                await call_tool(session, "buscar_ocorrencias_similares", {
++                    "texto_livre": "roubo de celular com uso de faca em via pública",
++                    "top_k": 5,
++                })
++
++                print("\n\n### TEST 2: Agrupar série criminal por texto livre ###")
++                await call_tool(session, "agrupar_serie_criminal", {
++                    "texto_livre": "furto de bicicleta em via pública",
++                    "top_k": 20,
++                })
++
+                 print("\n\n" + "=" * 70)
+                 print("ALL TESTS COMPLETED")
+-                print("=" * 70)
+-                print("\n✓ MCP Client successfully communicated with server")
+-                print("✓ All tools tested and working")
+                 print("=" * 70 + "\n")
+-                
++
+     except Exception as e:
+         print(f"\n✗ ERROR: Failed to connect to MCP server")
+         print(f"Details: {e}")
+-        print("\nMake sure:")
+-        print("  1. The MCP server file (mcp_server.py) exists")
+-        print("  2. Python dependencies are installed")
+-        print("  3. Qdrant is running (docker compose up -d)")
++        print("\nMake sure: docker compose up -d (postgres+redis) e a base populada.")
+         print("=" * 70 + "\n")
+ 
+ 
+ if __name__ == "__main__":
+-    # Run the async main function
+     asyncio.run(main())
+diff --git a/mcp_client_http.py b/mcp_client_http.py
+index dd86684..48927a5 100644
+--- a/mcp_client_http.py
++++ b/mcp_client_http.py
+@@ -1,188 +1,88 @@
+ """
+-MCP HTTP Client for Agentic RAG Application
+-Uses SSE (Server-Sent Events) transport to communicate with the MCP server via HTTP.
++Cliente MCP via SSE (HTTP) — harness de teste para as tools do P2 Linkage Criminal.
+ """
+ 
+ import asyncio
++import json
++
+ from mcp import ClientSession
+ from mcp.client.sse import sse_client
+ 
+ 
+-async def call_tool(session: ClientSession, tool_name: str, query: str):
+-    """
+-    Call an MCP tool with a query.
+-    
+-    Args:
+-        session: Active MCP client session
+-        tool_name: Name of the tool to call
+-        query: Query string to send to the tool
+-    """
++async def call_tool(session: ClientSession, tool_name: str, arguments: dict):
+     print(f"\n{'=' * 70}")
+     print(f"Calling tool: {tool_name}")
+-    print(f"Query: {query}")
++    print(f"Arguments: {arguments}")
+     print('=' * 70)
+-    
+-    try:
+-        result = await session.call_tool(tool_name, arguments={"query": query})
+-        
+-        print("\n✓ SUCCESS")
+-        print("\nResponse:")
+-        
+-        # Extract and display the content
+-        if hasattr(result, 'content') and result.content:
+-            for item in result.content:
+-                if hasattr(item, 'text'):
+-                    # Truncate long responses for readability
+-                    text = item.text
+-                    if len(text) > 500:
+-                        print(text[:500] + "...\n")
+-                    else:
+-                        print(text + "\n")
+-        else:
+-            print(result)
+-            
+-    except Exception as e:
+-        print(f"\n✗ ERROR: {e}")
+-    
+-    print('=' * 70)
+-
+ 
+-async def call_tool_cmd(session: ClientSession, tool_name: str, cmd: str):
+-    """
+-    Call an MCP tool that executes shell commands.
+-    Adapted specifically for the execute_shell_command tool.
+-    
+-    Args:
+-        session: Active MCP client session
+-        tool_name: Name of the tool to call (typically 'execute_shell_command')
+-        cmd: Shell command string to execute
+-    """
+-    print(f"\n{'=' * 70}")
+-    print(f"Calling tool: {tool_name}")
+-    print(f"Command: {cmd}")
+-    print('=' * 70)
+-    
+     try:
+-        result = await session.call_tool(tool_name, arguments={"cmd": cmd})
+-        
+-        print("\n✓ SUCCESS")
+-        print("\nCommand Output:")
+-        
+-        # Extract and display the content
++        result = await session.call_tool(tool_name, arguments=arguments)
++        print("\n✓ SUCCESS\n")
+         if hasattr(result, 'content') and result.content:
+             for item in result.content:
+                 if hasattr(item, 'text'):
+-                    # Display full output for shell commands (usually not too long)
+-                    text = item.text
+-                    if len(text) > 1000:
+-                        print(text[:1000] + "...\n")
+-                    else:
+-                        print(text + "\n")
++                    try:
++                        parsed = json.loads(item.text)
++                        print(json.dumps(parsed, indent=2, ensure_ascii=False)[:1500])
++                    except json.JSONDecodeError:
++                        print(item.text[:1500])
+         else:
+             print(result)
+-            
+     except Exception as e:
+         print(f"\n✗ ERROR: {e}")
+-    
++
+     print('=' * 70)
+ 
+ 
+ async def list_available_tools(session: ClientSession):
+-    """List all available tools from the MCP server."""
+     print("\n" + "=" * 70)
+     print("AVAILABLE MCP TOOLS")
+     print("=" * 70)
+-    
+     try:
+         tools = await session.list_tools()
+-        
+         if tools and hasattr(tools, 'tools'):
+             for i, tool in enumerate(tools.tools, 1):
+                 print(f"\n{i}. {tool.name}")
+-                if hasattr(tool, 'description') and tool.description:
+-                    print(f"   Description: {tool.description}")
+-                if hasattr(tool, 'inputSchema'):
+-                    print(f"   Input: {tool.inputSchema}")
++                if tool.description:
++                    print(f"   Description: {tool.description.strip().splitlines()[0]}")
+         else:
+             print("No tools found")
+-            
+     except Exception as e:
+         print(f"Error listing tools: {e}")
+-    
+     print("=" * 70)
+ 
+ 
+ async def main():
+-    """Main function to run MCP HTTP client tests."""
+-    
+-    # Server configuration
+     HOST = "127.0.0.1"
+     PORT = 8080
+     SERVER_URL = f"http://{HOST}:{PORT}/sse"
+-    
++
+     print("\n" + "=" * 70)
+-    print("MCP HTTP CLIENT - AGENTIC RAG")
++    print("MCP HTTP CLIENT - P2 LINKAGE CRIMINAL")
+     print("=" * 70)
+     print(f"\nConnecting to MCP server via SSE at {SERVER_URL}...")
+-    
++
+     try:
+         async with sse_client(SERVER_URL) as (read, write):
+             async with ClientSession(read, write) as session:
+-                # Initialize the session
+                 await session.initialize()
+-                
+                 print("✓ Connected to MCP server via HTTP/SSE!\n")
+-                
+-                # List available tools
++
+                 await list_available_tools(session)
+-                
+-                # Test Case 1: Python FAQ - List Comprehensions
+-                print("\n\n### TEST 1: Python FAQ - List Comprehensions ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "Can you explain list comprehensions in Python?"
+-                )
+-                
+-                # Test Case 2: Python FAQ - Decorators
+-                print("\n\n### TEST 2: Python FAQ - Decorators ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "What are Python decorators?"
+-                )
+-                
+-                # Test Case 3: Python FAQ - == vs is
+-                print("\n\n### TEST 3: Python FAQ - == vs is ###")
+-                await call_tool(
+-                    session,
+-                    "python_faq_retrieval_tool",
+-                    "What is the difference between == and is in Python?"
+-                )
+-                
+-                # Test Case 4: Web Search - Polars
+-                print("\n\n### TEST 4: Web Search - Polars DataFrame ###")
+-                await call_tool(
+-                    session,
+-                    "firecrawl_web_search_tool",
+-                    "What is the Polars DataFrame library?"
+-                )
+-
+-                # Test Case 5: Shell Command - List files
+-                print("\n\n### TEST 5: Shell Command - List files ###")
+-                await call_tool_cmd(
+-                    session,
+-                    "execute_shell_command",
+-                    "ls -la"
+-                )
+-                
++
++                print("\n\n### TEST 1: Busca por texto livre ###")
++                await call_tool(session, "buscar_ocorrencias_similares", {
++                    "texto_livre": "roubo de celular com uso de faca em via pública",
++                    "top_k": 5,
++                })
++
++                print("\n\n### TEST 2: Disparar reindexação assíncrona ###")
++                await call_tool(session, "reindexar_embeddings", {"batch_size": 50})
++
+                 print("\n\n" + "=" * 70)
+                 print("ALL TESTS COMPLETED")
+-                print("=" * 70)
+-                print("\n✓ MCP HTTP Client successfully communicated with server")
+-                print("✓ All tools tested and working")
+                 print("=" * 70 + "\n")
+-                
++
+     except Exception as e:
+         print(f"\n✗ ERROR: Failed to connect to MCP server via HTTP")
+         print(f"Details: {e}")
+@@ -194,5 +94,4 @@ async def main():
+ 
+ 
+ if __name__ == "__main__":
+-    # Run the async main function
+     asyncio.run(main())
+diff --git a/mcp_server.py b/mcp_server.py
+index 41d0370..a264779 100644
+--- a/mcp_server.py
++++ b/mcp_server.py
+@@ -1,193 +1,57 @@
+ """
+ MCP Server Module
+-Implements the Model Context Protocol server with intelligent tool selection.
++Servidor MCP do domínio de segurança pública (BOs) — Fatia 1: P2 Linkage Criminal.
++
++O servidor expõe apenas tools (sem LLM embarcada); o raciocínio/roteamento
++fica no cliente, conforme o princípio de desacoplamento de modelo.
+ """
+ 
+ import os
+-import subprocess
+-from typing import List
+-import requests
+ 
+ from dotenv import load_dotenv
+ from mcp.server.fastmcp import FastMCP
+ 
+-# Import our RAG engine and FAQ data
+-from rag_app import FAQEngine, PYTHON_FAQ_TEXT
+-
++from server.tools.p2_linkage import (
++    buscar_ocorrencias_similares_tool,
++    obter_razoes_similaridade_tool,
++    agrupar_serie_criminal_tool,
++)
++from server.tools.util_jobs import (
++    reindexar_embeddings_tool,
++    consultar_job_status_tool,
++)
+ 
+-# Load environment variables from .env file
+ load_dotenv()
+ 
+-# Configuration constants
+-QDRANT_URL = "http://localhost:6333"
+-COLLECTION_NAME = "python_faq_collection"
+-HOST = "127.0.0.1"
+-PORT = 8080
+-
+-# Create an MCP server instance with host and port for SSE support
+-mcp_server = FastMCP("MCP-RAG-app", host=HOST, port=PORT)
+-
+-
+-# Integrar MCP em FastAPI existente
+-# Se você já tem uma aplicação FastAPI e quer adicionar MCP:
+-# Sua aplicação FastAPI existente
+-# app = FastAPI(title="Minha API")
+-# ...existing code...
+-# Montar MCP como sub-aplicação
+-# app.mount("/mcp", mcp_server.app)
+-
+-
+-# Initialize FAQ Engine (will be set up in main)
+-faq_engine = None
+-
+-
+-@mcp_server.tool()
+-def python_faq_retrieval_tool(query: str) -> str:
+-    """
+-    Retrieve the most relevant documents from the Python FAQ collection. 
+-    Use this tool when the user asks about general Python programming concepts.
+-    
+-    Args:
+-        query (str): The user query to retrieve the most relevant documents.
+-        
+-    Returns:
+-        str: The most relevant documents retrieved from the vector DB.
+-    """
+-    if not isinstance(query, str):
+-        raise TypeError("Query must be a string.")
+-    
+-    # Use the pre-initialized faq_engine instance
+-    return faq_engine.answer_question(query)
+-
++HOST = os.getenv("MCP_HOST", "127.0.0.1")
++PORT = int(os.getenv("MCP_PORT", "8080"))
+ 
+-@mcp_server.tool()
+-def firecrawl_web_search_tool(query: str) -> str:
+-    """
+-    Search for information on a given topic using Firecrawl.
+-    Use this tool when the user asks a specific question not related to the Python FAQ.
++mcp_server = FastMCP("MCP-BNBO-Seguranca-Publica", host=HOST, port=PORT)
+ 
+-    Args:
+-        query (str): The user query to search for information.
++mcp_server.tool(name="buscar_ocorrencias_similares")(buscar_ocorrencias_similares_tool)
++mcp_server.tool(name="obter_razoes_similaridade")(obter_razoes_similaridade_tool)
++mcp_server.tool(name="agrupar_serie_criminal")(agrupar_serie_criminal_tool)
++mcp_server.tool(name="reindexar_embeddings")(reindexar_embeddings_tool)
++mcp_server.tool(name="consultar_job_status")(consultar_job_status_tool)
+ 
+-    Returns:
+-        str: A formatted string with the most relevant web search results.
+-    """
+-    if not isinstance(query, str):
+-        raise TypeError("Query must be a string.")
+ 
+-    url = "https://api.firecrawl.dev/v1/search"
+-    api_key = os.getenv('FIRECRAWL_API_KEY')
+-
+-    if not api_key:
+-        return "Error: FIRECRAWL_API_KEY environment variable is not set."
+-
+-    payload = {"query": query, "timeout": 60000}
+-    headers = {
+-        "Authorization": f"Bearer {api_key}",
+-        "Content-Type": "application/json"
+-    }
+-
+-    try:
+-        response = requests.post(url, json=payload, headers=headers)
+-        response.raise_for_status()
+-        results = response.json().get("data", [])
+-        
+-        if not results:
+-            return "No results found from web search."
+-        
+-        # Format results as a string
+-        formatted_results = f"Found {len(results)} results:\n\n"
+-        for i, result in enumerate(results[:5], 1):
+-            if isinstance(result, dict):
+-                title = result.get('title', 'No title')
+-                url_link = result.get('url', 'No URL')
+-                snippet = result.get('description', '')
+-                formatted_results += f"{i}. {title}\n   URL: {url_link}\n"
+-                if snippet:
+-                    formatted_results += f"   {snippet[:150]}...\n"
+-                formatted_results += "\n"
+-        
+-        return formatted_results.strip()
+-        
+-    except requests.exceptions.RequestException as e:
+-        return f"Error connecting to Firecrawl API: {e}"
+-
+-# Define the base working directory for command execution
+-WORKSPACE_PATH = os.path.expanduser("/home/seaddados/projetos/mcp-agentic-rag")
+-
+-@mcp_server.tool()
+-def execute_shell_command(cmd: str) -> str:
+-    """
+-    Execute shell commands within the designated workspace environment.
+-    
+-    This tool provides terminal access for file operations, system commands,
+-    and other CLI-based tasks. When a terminal operation is needed,
+-    this function will be utilized to carry out the requested action.
+-
+-    Parameters:
+-        cmd: Shell command string to be executed
+-    
+-    Returns:
+-        Command execution output (stdout/stderr) or error details
+-    """
+-    try:
+-        # Execute command with workspace as working directory
+-        process = subprocess.run(
+-            cmd, 
+-            shell=True, 
+-            cwd=WORKSPACE_PATH, 
+-            capture_output=True, 
+-            text=True,
+-            timeout=30  # Add timeout for safety
+-        )
+-        
+-        # Return output, prioritizing stdout over stderr
+-        output = process.stdout.strip() if process.stdout else process.stderr.strip()
+-        return output if output else "Command executed successfully (no output)"
+-        
+-    except subprocess.TimeoutExpired:
+-        return "Error: Command execution timed out after 30 seconds"
+-    except Exception as error:
+-        return f"Execution error: {str(error)}"
+-
+-        
+ if __name__ == "__main__":
+-    # 1. Initialize our RAG Engine
++    transport = os.getenv("MCP_TRANSPORT", "stdio")
++
+     print("=" * 60)
+-    print("MCP AGENTIC RAG APPLICATION")
++    print("MCP BNBO - SEGURANCA PUBLICA (P2 LINKAGE CRIMINAL)")
+     print("=" * 60)
+-    print("\nInitializing FAQ Engine and setting up Qdrant collection...")
+-    faq_engine = FAQEngine(qdrant_url=QDRANT_URL, collection_name=COLLECTION_NAME)
+-    
+-    # 2. Ingest our data into the vector database
+-    # This will create embeddings and store them
+-    faq_engine.setup_collection(PYTHON_FAQ_TEXT)
+-    
+-    # 3. Determine transport mode
+-    import os
+-    transport = os.getenv('MCP_TRANSPORT', 'stdio')
+-    
+-    # 4. Start the MCP server
+-    print(f"\n{'=' * 60}")
+-    print("Starting MCP server")
+-    print(f"{'=' * 60}")
+-    print("\nAvailable Tools:")
+-    print("  1. python_faq_retrieval_tool - Search Python FAQ knowledge base")
+-    print("  2. firecrawl_web_search_tool - Search the web for information")
+-    print("  3. execute_shell_command - Execute shell commands")
+-    
+-    if transport == 'sse':
+-        print(f"\n✓ Transport: SSE (HTTP)")
+-        print(f"✓ Server URL: http://{HOST}:{PORT}/sse")
+-        print("\nServer is ready to accept HTTP connections!")
+-        print("Use mcp_client_http.py to test the server.")
++    print("\nTools registradas:")
++    print("  1. buscar_ocorrencias_similares")
++    print("  2. obter_razoes_similaridade")
++    print("  3. agrupar_serie_criminal")
++    print("  4. reindexar_embeddings (assincrona, Celery)")
++    print("  5. consultar_job_status")
++
++    if transport == "sse":
++        print(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")
+     else:
+-        print(f"\n✓ Transport: STDIO")
+-        print("\nServer is ready to accept STDIO connections!")
+-        print("Use mcp_client.py to test the server.")
+-    
++        print("\nTransport: STDIO")
++
+     print("Press CTRL+C to stop the server.\n")
+-    
+-    # Run the server with the selected transport
+     mcp_server.run(transport)
+-
+diff --git a/ml/__init__.py b/ml/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/ml/embeddings.py b/ml/embeddings.py
+new file mode 100644
+index 0000000..6156170
+--- /dev/null
++++ b/ml/embeddings.py
+@@ -0,0 +1,56 @@
++"""
++Motor de embeddings — evolução do FAQEngine (rag_app.py) para o domínio de BOs.
++
++Troca o backend Qdrant/all-MiniLM-L6-v2 por multilingual-e5-large (768d),
++com os prefixos `query:`/`passage:` exigidos pelo modelo e5 e cache de
++embeddings no Redis (chave = SHA-256 do texto prefixado, TTL 24h).
++"""
++
++import hashlib
++import os
++from typing import List
++
++import redis
++
++os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
++
++from llama_index.embeddings.huggingface import HuggingFaceEmbedding
++
++EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "intfloat/multilingual-e5-large")
++REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
++CACHE_TTL_SECONDS = 24 * 60 * 60
++
++
++class EmbeddingEngine:
++    """Gera embeddings e5-large com prefixos query:/passage: e cache Redis."""
++
++    def __init__(self, model_name: str = EMBED_MODEL_NAME, redis_url: str = REDIS_URL):
++        self.model = HuggingFaceEmbedding(model_name=model_name, trust_remote_code=True)
++        self.vector_dim = len(self.model.get_text_embedding("query: teste"))
++        self.redis = redis.from_url(redis_url, decode_responses=False)
++
++    @staticmethod
++    def _cache_key(prefixed_text: str) -> str:
++        digest = hashlib.sha256(prefixed_text.encode("utf-8")).hexdigest()
++        return f"emb:{digest}"
++
++    def _embed_with_cache(self, prefixed_text: str) -> List[float]:
++        key = self._cache_key(prefixed_text)
++        cached = self.redis.get(key)
++        if cached is not None:
++            import numpy as np
++            return np.frombuffer(cached, dtype="float32").tolist()
++
++        vector = self.model.get_text_embedding(prefixed_text)
++        import numpy as np
++        self.redis.set(key, np.asarray(vector, dtype="float32").tobytes(), ex=CACHE_TTL_SECONDS)
++        return vector
++
++    def embed_query(self, text: str) -> List[float]:
++        return self._embed_with_cache(f"query: {text}")
++
++    def embed_passage(self, text: str) -> List[float]:
++        return self._embed_with_cache(f"passage: {text}")
++
++    def embed_passages(self, texts: List[str]) -> List[List[float]]:
++        return [self.embed_passage(t) for t in texts]
+diff --git a/ml/linkage.py b/ml/linkage.py
+new file mode 100644
+index 0000000..2158946
+--- /dev/null
++++ b/ml/linkage.py
+@@ -0,0 +1,195 @@
++"""
++Linkage Criminal (P2) — busca por similaridade semântica + estrutural,
++explicabilidade das razões de vínculo, e agrupamento de série criminal.
++"""
++
++import math
++from typing import Any
++
++from data.db import get_connection
++from ml.embeddings import EmbeddingEngine
++
++PESOS_RERANK = {
++    "semantico": 0.5,
++    "faixa_horaria": 0.15,
++    "instrumento": 0.15,
++    "perfil_vitima": 0.1,
++    "proximidade_espacial": 0.1,
++}
++
++RAIO_PROXIMIDADE_KM = 5.0
++
++
++def _haversine_km(lat1, lng1, lat2, lng2) -> float:
++    if None in (lat1, lng1, lat2, lng2):
++        return float("inf")
++    r = 6371.0
++    p1, p2 = math.radians(lat1), math.radians(lat2)
++    dphi = math.radians(lat2 - lat1)
++    dlambda = math.radians(lng2 - lng1)
++    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
++    return 2 * r * math.asin(math.sqrt(a))
++
++
++def _faixa_horaria(dt) -> str:
++    h = dt.hour
++    if 5 <= h < 12:
++        return "manha"
++    if 12 <= h < 18:
++        return "tarde"
++    if 18 <= h < 24:
++        return "noite"
++    return "madrugada"
++
++
++def _score_estrutural(base: dict, candidato: dict) -> dict[str, float]:
++    razoes = {}
++    razoes["faixa_horaria"] = 1.0 if _faixa_horaria(base["data_hora"]) == _faixa_horaria(candidato["data_hora"]) else 0.0
++    razoes["instrumento"] = 1.0 if base.get("instrumento") and base.get("instrumento") == candidato.get("instrumento") else 0.0
++    razoes["perfil_vitima"] = 1.0 if base.get("vitima_perfil") == candidato.get("vitima_perfil") else 0.0
++    dist_km = _haversine_km(base.get("lat"), base.get("lng"), candidato.get("lat"), candidato.get("lng"))
++    razoes["proximidade_espacial"] = max(0.0, 1.0 - dist_km / RAIO_PROXIMIDADE_KM) if dist_km != float("inf") else 0.0
++    return razoes
++
++
++def _buscar_por_vetor(conn, vetor: list[float], limit: int, excluir_id: str | None) -> list[dict]:
++    with conn.cursor() as cur:
++        cur.execute(
++            """
++            SELECT id, bo_numero, estado, municipio, data_hora, lat, lng, dominio,
++                   natureza, relato, vitima_perfil, autor_perfil, instrumento, status,
++                   1 - (embedding <=> %s::vector) AS score_semantico
++            FROM bo
++            WHERE (%s::uuid IS NULL OR id != %s::uuid)
++            ORDER BY embedding <=> %s::vector
++            LIMIT %s
++            """,
++            (vetor, excluir_id, excluir_id, vetor, limit),
++        )
++        cols = [c.name for c in cur.description]
++        return [dict(zip(cols, row)) for row in cur.fetchall()]
++
++
++def _buscar_bo_por_id(conn, bo_id: str) -> dict | None:
++    with conn.cursor() as cur:
++        cur.execute("SELECT * FROM bo WHERE id = %s::uuid", (bo_id,))
++        row = cur.fetchone()
++        if row is None:
++            return None
++        cols = [c.name for c in cur.description]
++        return dict(zip(cols, row))
++
++
++def buscar_ocorrencias_similares(
++    bo_id: str | None = None,
++    texto_livre: str | None = None,
++    top_k: int = 10,
++) -> list[dict[str, Any]]:
++    """Busca BOs similares por bo_id (vetor já indexado) ou texto_livre (nova query)."""
++    if not bo_id and not texto_livre:
++        raise ValueError("Informe bo_id ou texto_livre.")
++
++    engine = EmbeddingEngine()
++    with get_connection() as conn:
++        base = None
++        if bo_id:
++            base = _buscar_bo_por_id(conn, bo_id)
++            if base is None:
++                raise ValueError(f"BO {bo_id} não encontrado.")
++            vetor = list(base["embedding"])
++        else:
++            vetor = engine.embed_query(texto_livre)
++
++        candidatos = _buscar_por_vetor(conn, vetor, limit=top_k * 3, excluir_id=bo_id)
++
++        resultados = []
++        for candidato in candidatos:
++            razoes_estruturais = _score_estrutural(base, candidato) if base else {}
++            score_final = candidato["score_semantico"] * PESOS_RERANK["semantico"]
++            for chave, valor in razoes_estruturais.items():
++                score_final += valor * PESOS_RERANK[chave]
++
++            resultados.append({
++                "bo_id": str(candidato["id"]),
++                "bo_numero": candidato["bo_numero"],
++                "natureza": candidato["natureza"],
++                "estado": candidato["estado"],
++                "municipio": candidato["municipio"],
++                "data_hora": candidato["data_hora"].isoformat(),
++                "score_semantico": round(candidato["score_semantico"], 4),
++                "score_final": round(score_final, 4),
++                "razoes_estruturais": razoes_estruturais,
++            })
++
++        resultados.sort(key=lambda r: r["score_final"], reverse=True)
++        return resultados[:top_k]
++
++
++def obter_razoes_similaridade(bo_id_a: str, bo_id_b: str) -> dict[str, Any]:
++    """Explica as dimensões e pesos que vinculam dois BOs."""
++    with get_connection() as conn:
++        bo_a = _buscar_bo_por_id(conn, bo_id_a)
++        bo_b = _buscar_bo_por_id(conn, bo_id_b)
++        if bo_a is None or bo_b is None:
++            raise ValueError("Um ou ambos os BOs informados não foram encontrados.")
++
++        with conn.cursor() as cur:
++            cur.execute(
++                "SELECT 1 - (%s::vector <=> %s::vector)",
++                (list(bo_a["embedding"]), list(bo_b["embedding"])),
++            )
++            score_semantico = cur.fetchone()[0]
++
++        razoes_estruturais = _score_estrutural(bo_a, bo_b)
++        contribuicoes = {"semantico": score_semantico * PESOS_RERANK["semantico"]}
++        for chave, valor in razoes_estruturais.items():
++            contribuicoes[chave] = valor * PESOS_RERANK[chave]
++
++        return {
++            "bo_id_a": bo_id_a,
++            "bo_id_b": bo_id_b,
++            "score_semantico": round(score_semantico, 4),
++            "razoes_estruturais": razoes_estruturais,
++            "contribuicoes_pesadas": {k: round(v, 4) for k, v in contribuicoes.items()},
++            "score_final": round(sum(contribuicoes.values()), 4),
++        }
++
++
++def agrupar_serie_criminal(
++    bo_id: str | None = None,
++    texto_livre: str | None = None,
++    top_k: int = 30,
++    eps: float = 0.35,
++    min_samples: int = 2,
++) -> dict[str, Any]:
++    """Agrupa candidatos similares via DBSCAN sobre o espaço (1 - score_final), com score de coesão."""
++    from sklearn.cluster import DBSCAN
++    import numpy as np
++
++    candidatos = buscar_ocorrencias_similares(bo_id=bo_id, texto_livre=texto_livre, top_k=top_k)
++    if not candidatos:
++        return {"clusters": [], "ruido": []}
++
++    distancias = np.array([[1 - c["score_final"]] for c in candidatos])
++    labels = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean").fit_predict(distancias)
++
++    clusters: dict[int, list[dict]] = {}
++    ruido = []
++    for candidato, label in zip(candidatos, labels):
++        if label == -1:
++            ruido.append(candidato)
++        else:
++            clusters.setdefault(label, []).append(candidato)
++
++    clusters_formatados = []
++    for label, membros in clusters.items():
++        coesao = sum(m["score_final"] for m in membros) / len(membros)
++        clusters_formatados.append({
++            "cluster_id": int(label),
++            "tamanho": len(membros),
++            "coesao_media": round(coesao, 4),
++            "membros": membros,
++        })
++
++    clusters_formatados.sort(key=lambda c: c["coesao_media"], reverse=True)
++    return {"clusters": clusters_formatados, "ruido": ruido}
+diff --git a/rag_app.py b/rag_app.py
+deleted file mode 100644
+index b3c5c29..0000000
+--- a/rag_app.py
++++ /dev/null
+@@ -1,244 +0,0 @@
+-"""
+-RAG Application Module
+-Implements the FAQ Engine for embedding, indexing, and querying Python FAQ data.
+-"""
+-
+-import os
+-import uuid
+-from itertools import islice
+-from typing import List, Dict, Any, Generator
+-
+-# Configure HuggingFace timeouts before importing
+-os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '300'  # 5 minutes timeout
+-os.environ['CURL_CA_BUNDLE'] = ''  # Disable SSL verification if needed
+-
+-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+-from tqdm import tqdm
+-from qdrant_client import models, QdrantClient
+-
+-
+-# Python FAQ Knowledge Base
+-PYTHON_FAQ_TEXT = """
+-Question: What is the difference between a list and a tuple in Python?
+-Answer: Lists are mutable, meaning their elements can be changed, while tuples are immutable. Lists use square brackets `[]` and tuples use parentheses `()`.
+-
+-Question: What are Python decorators?
+-Answer: Decorators are a design pattern in Python that allows a user to add new functionality to an existing object without modifying its structure. They are often used for logging, timing, and access control.
+-
+-Question: How does Python's Global Interpreter Lock (GIL) work?
+-Answer: The GIL is a mutex that protects access to Python objects, preventing multiple threads from executing Python bytecode at the same time. This means that even on a multi-core processor, only one thread can execute Python code at once.
+-
+-Question: What is the difference between `==` and `is` in Python?
+-Answer: `==` checks for equality of value (do two objects have the same content?), while `is` checks for identity (do two variables point to the same object in memory?).
+-
+-Question: Explain list comprehensions and their benefits.
+-Answer: List comprehensions provide a concise way to create lists. They are often more readable and faster than using traditional `for` loops and `.append()` calls.
+-
+-Question: What is `*args` and `**kwargs` in function definitions?
+-Answer: `*args` allows you to pass a variable number of non-keyword arguments to a function, which are received as a tuple. `**kwargs` allows you to pass a variable number of keyword arguments, received as a dictionary.
+-
+-Question: What are Python's magic methods (e.g., `__init__`, `__str__`)?
+-Answer: Magic methods, or dunder methods, are special methods that you can define to add "magic" to your classes. They are invoked by Python for built-in operations, like `__init__` for object creation or `__add__` for the `+` operator.
+-
+-Question: How does error handling work in Python?
+-Answer: Python uses `try...except` blocks to handle exceptions. Code that might raise an error is placed in the `try` block, and the code to handle the exception is placed in the `except` block.
+-
+-Question: What is the purpose of the `if __name__ == "__main__":` block?
+-Answer: This block ensures that the code inside it only runs when the script is executed directly, not when it is imported as a module into another script.
+-
+-Question: What are generators in Python?
+-Answer: Generators are a simple way to create iterators. They are functions that use the `yield` keyword to return a sequence of values one at a time, saving memory for large datasets.
+-"""
+-
+-
+-def batch_generator(data: List[Any], batch_size: int) -> Generator[List[Any], None, None]:
+-    """
+-    Yields successive n-sized chunks from a list.
+-    
+-    Args:
+-        data: List of items to batch
+-        batch_size: Size of each batch
+-        
+-    Yields:
+-        List chunks of specified size
+-    """
+-    for i in range(0, len(data), batch_size):
+-        yield data[i : i + batch_size]
+-
+-
+-class FAQEngine:
+-    """
+-    An engine for setting up and querying a FAQ database using Qdrant and HuggingFace embeddings.
+-    
+-    This class handles:
+-    - Loading and initializing embedding models
+-    - Creating and managing Qdrant collections
+-    - Embedding and indexing FAQ documents
+-    - Performing semantic search queries
+-    """
+-    
+-    def __init__(self,
+-                 qdrant_url: str = "http://localhost:6333",
+-                 collection_name: str = "python-faq",
+-                 embed_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+-        """
+-        Initialize the FAQ Engine.
+-        
+-        Args:
+-            qdrant_url: URL of the Qdrant server
+-            collection_name: Name of the collection to create/use
+-            embed_model_name: HuggingFace model name for embeddings
+-                            Default: sentence-transformers/all-MiniLM-L6-v2 (fast, lightweight)
+-                            Alternative: nomic-ai/nomic-embed-text-v1.5 (better quality, larger)
+-        """
+-        self.collection_name = collection_name
+-        
+-        # Initialize the embedding model
+-        print(f"Loading embedding model: {embed_model_name}...")
+-        print("(This may take a few minutes on first run to download the model)")
+-        
+-        try:
+-            self.embed_model = HuggingFaceEmbedding(
+-                model_name=embed_model_name,
+-                trust_remote_code=True
+-            )
+-        except Exception as e:
+-            print(f"Error loading model {embed_model_name}: {e}")
+-            print("Falling back to default model: sentence-transformers/all-MiniLM-L6-v2")
+-            self.embed_model = HuggingFaceEmbedding(
+-                model_name="sentence-transformers/all-MiniLM-L6-v2",
+-                trust_remote_code=False
+-            )
+-        
+-        # Dynamically get the vector dimension from the model
+-        self.vector_dim = len(self.embed_model.get_text_embedding("test"))
+-        print(f"Embedding model loaded. Vector dimension: {self.vector_dim}")
+-
+-        # Initialize the Qdrant client
+-        self.client = QdrantClient(url=qdrant_url, prefer_grpc=True)
+-        print("Connected to Qdrant.")
+-
+-    @staticmethod
+-    def parse_faq(text: str) -> List[str]:
+-        """
+-        Parses the raw FAQ text into a list of Q&A strings.
+-        
+-        Args:
+-            text: Raw FAQ text with Q&A pairs separated by blank lines
+-            
+-        Returns:
+-            List of cleaned Q&A strings
+-        """
+-        return [
+-            qa.replace("\n", " ").strip()
+-            for qa in text.strip().split("\n\n")
+-        ]
+-
+-    def setup_collection(self, faq_text: str, batch_size: int = 64):
+-        """
+-        Creates a Qdrant collection (if it doesn't exist) and ingests the FAQ data.
+-        
+-        Args:
+-            faq_text: Raw FAQ text to parse and index
+-            batch_size: Number of documents to process in each batch
+-        """
+-        # Parse FAQ text into individual contexts
+-        faq_contexts = self.parse_faq(faq_text)
+-        
+-        # Check if collection exists, create if not
+-        try:
+-            self.client.get_collection(collection_name=self.collection_name)
+-            print(f"Collection '{self.collection_name}' already exists. Skipping creation.")
+-            return  # Skip ingestion if collection already exists
+-        except Exception:
+-            print(f"Creating collection '{self.collection_name}'...")
+-            self.client.create_collection(
+-                collection_name=self.collection_name,
+-                vectors_config=models.VectorParams(
+-                    size=self.vector_dim,
+-                    distance=models.Distance.DOT
+-                )
+-            )
+-
+-        print(f"Embedding and ingesting {len(faq_contexts)} documents...")
+-        
+-        # Process data in batches
+-        for batch in tqdm(batch_generator(faq_contexts, batch_size), 
+-                          total=(len(faq_contexts) // batch_size) + 1,
+-                          desc="Ingesting FAQ data"):
+-            
+-            # 1. Get embeddings for the batch
+-            embeddings = self.embed_model.get_text_embedding_batch(batch, show_progress_bar=False)
+-            
+-            # 2. Create Qdrant points with unique IDs and payloads
+-            points = [
+-                models.PointStruct(
+-                    id=str(uuid.uuid4()),  # Generate a unique ID for each point
+-                    vector=vector,
+-                    payload={"context": context}
+-                )
+-                for context, vector in zip(batch, embeddings)
+-            ]
+-            
+-            # 3. Upload points to the collection
+-            self.client.upload_points(
+-                collection_name=self.collection_name,
+-                points=points,
+-                wait=False  # Asynchronous upload for speed
+-            )
+-            
+-        print("Data ingestion complete.")
+-        print("Updating collection indexing threshold...")
+-        self.client.update_collection(
+-            collection_name=self.collection_name,
+-            optimizer_config=models.OptimizersConfigDiff(indexing_threshold=20000)
+-        )
+-        print("Collection setup is finished.")
+-
+-    def answer_question(self, query: str, top_k: int = 3) -> str:
+-        """
+-        Searches the vector database for a given query and returns the most relevant contexts.
+-        
+-        Args:
+-            query: User's question
+-            top_k: Number of top results to return
+-            
+-        Returns:
+-            Formatted string with relevant FAQ contexts
+-        """
+-        # 1. Create an embedding for the user's query
+-        query_embedding = self.embed_model.get_query_embedding(query)
+-
+-        # 2. Search Qdrant for the most similar vectors
+-        try:
+-            search_result = self.client.query_points(
+-                collection_name=self.collection_name,
+-                query=query_embedding,
+-                limit=top_k,
+-                score_threshold=0.5  # Optional: filter out less relevant results
+-            ).points
+-        except AttributeError:
+-            # Fallback for older qdrant-client versions
+-            from qdrant_client.models import SearchRequest
+-            search_result = self.client.search(
+-                collection_name=self.collection_name,
+-                query_vector=query_embedding,
+-                limit=top_k,
+-                score_threshold=0.5
+-            )
+-
+-        # 3. Format the results into a single string
+-        if not search_result:
+-            return "I couldn't find a relevant answer in my knowledge base."
+-
+-        relevant_contexts = [
+-            hit.payload["context"] for hit in search_result
+-        ]
+-        
+-        # Combine the contexts into a final, readable output
+-        formatted_output = "\n\n---\n\n".join([
+-            f"Here are the most relevant pieces of information I found:\n\n{ctx}"
+-            for ctx in relevant_contexts
+-        ])
+-        return formatted_output
+-
+diff --git a/requirements.txt b/requirements.txt
+index 56db7c9..0633110 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,22 +1,36 @@
+-# MCP Agentic RAG - Python Dependencies
++# BNBO MCP - Python Dependencies
+ 
+ # MCP Framework
+ mcp>=1.0.0
+ 
+-# Vector Database
+-qdrant-client>=1.7.0
++# Banco relacional + vetorial (pgvector)
++psycopg[binary]>=3.1.0
++psycopg-pool>=3.2.0
++pgvector>=0.2.5
+ 
+-# Embeddings and LLM Integration
++# Geo (H3) - usado a partir da Fatia 4 (Atlas de Vulnerabilidade)
++h3>=3.7.0
++
++# Cache e jobs assíncronos
++redis>=5.0.0
++celery>=5.3.0
++
++# Embeddings e LLM Integration
+ llama-index-embeddings-huggingface>=0.1.0
+ llama-index-core>=0.10.0
+ 
++# ML auxiliar (linkage / DBSCAN, estatística)
++numpy>=1.26.0
++scipy>=1.11.0
++scikit-learn>=1.3.0
++
+ # Utilities
+ python-dotenv>=1.0.0
+ requests>=2.31.0
+ tqdm>=4.66.0
++pydantic>=2.5.0
+ 
+-# Additional dependencies for embeddings
+-# torch>=2.0.0
++# Dependências de embeddings
+ transformers>=4.30.0
+ sentence-transformers>=2.2.0
+-einops>=0.6.1
+\ No newline at end of file
++einops>=0.6.1
+diff --git a/server/__init__.py b/server/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/server/tools/__init__.py b/server/tools/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/server/tools/p2_linkage.py b/server/tools/p2_linkage.py
+new file mode 100644
+index 0000000..471ab0c
+--- /dev/null
++++ b/server/tools/p2_linkage.py
+@@ -0,0 +1,83 @@
++"""
++Tools MCP do projeto P2 — Linkage Criminal.
++
++Cada tool é registrada no `mcp_server` em `mcp_server.py`. As descriptions
++abaixo são o contrato lido pela LLM do cliente para decidir quando/como
++chamar cada tool — devem ser precisas.
++"""
++
++import json
++
++from ml import linkage
++
++
++def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int = 10) -> str:
++    """
++    Busca Boletins de Ocorrência semanticamente e estruturalmente similares a um
++    BO existente (por bo_id) ou a uma descrição livre (texto_livre).
++
++    Use esta tool quando o usuário quiser encontrar ocorrências parecidas com
++    um caso já registrado, ou relacionadas a uma descrição de fato.
++
++    Args:
++        bo_id (str): UUID do BO de referência. Use isto OU texto_livre.
++        texto_livre (str): Descrição livre do fato a buscar. Use isto OU bo_id.
++        top_k (int): Número máximo de resultados a retornar (default 10).
++
++    Returns:
++        str: JSON com a lista de BOs similares, score semântico, score final
++             (reranking ponderado) e razões estruturais de cada candidato.
++    """
++    resultados = linkage.buscar_ocorrencias_similares(
++        bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k
++    )
++    return json.dumps(resultados, ensure_ascii=False, default=str)
++
++
++def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
++    """
++    Explica por que dois BOs foram considerados similares, detalhando as
++    dimensões (semântica, faixa horária, instrumento, perfil da vítima,
++    proximidade espacial) e o peso de cada uma no score final.
++
++    Use esta tool quando o usuário pedir explicabilidade sobre um vínculo
++    apontado por `buscar_ocorrencias_similares_tool` ou `agrupar_serie_criminal_tool`.
++
++    Args:
++        bo_id_a (str): UUID do primeiro BO.
++        bo_id_b (str): UUID do segundo BO.
++
++    Returns:
++        str: JSON com score semântico, razões estruturais, contribuições
++             ponderadas de cada dimensão e o score final agregado.
++    """
++    resultado = linkage.obter_razoes_similaridade(bo_id_a, bo_id_b)
++    return json.dumps(resultado, ensure_ascii=False, default=str)
++
++
++def agrupar_serie_criminal_tool(
++    bo_id: str = "", texto_livre: str = "", top_k: int = 30, eps: float = 0.35, min_samples: int = 2
++) -> str:
++    """
++    Agrupa BOs similares a um caso de referência em possíveis séries
++    criminais, usando DBSCAN sobre os scores de similaridade.
++
++    Use esta tool quando o usuário quiser identificar um padrão/série de
++    ocorrências (ex.: mesmo autor, mesmo modus operandi) a partir de um BO
++    ou de uma descrição livre, em vez de apenas uma lista de similares.
++
++    Args:
++        bo_id (str): UUID do BO de referência. Use isto OU texto_livre.
++        texto_livre (str): Descrição livre do fato a buscar. Use isto OU bo_id.
++        top_k (int): Quantos candidatos buscar antes de agrupar (default 30).
++        eps (float): Raio de vizinhança do DBSCAN no espaço de distância (default 0.35).
++        min_samples (int): Mínimo de membros para formar um cluster (default 2).
++
++    Returns:
++        str: JSON com a lista de clusters (cada um com score de coesão média
++             e membros) e a lista de candidatos classificados como ruído.
++    """
++    resultado = linkage.agrupar_serie_criminal(
++        bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k, eps=eps, min_samples=min_samples
++    )
++    return json.dumps(resultado, ensure_ascii=False, default=str)
+diff --git a/server/tools/util_jobs.py b/server/tools/util_jobs.py
+new file mode 100644
+index 0000000..5698678
+--- /dev/null
++++ b/server/tools/util_jobs.py
+@@ -0,0 +1,55 @@
++"""
++Tools transversais de jobs assíncronos — disparo e acompanhamento via Celery.
++"""
++
++import json
++
++from celery.result import AsyncResult
++
++from jobs.celery_app import celery_app
++from jobs.tasks import reindexar_embeddings
++
++
++def reindexar_embeddings_tool(batch_size: int = 100) -> str:
++    """
++    Dispara, de forma assíncrona, a reindexação dos embeddings de todos os BOs
++    (por exemplo, após uma troca do modelo de embedding).
++
++    Use esta tool quando o usuário pedir para recalcular/atualizar os
++    embeddings da base. Esta tool retorna imediatamente um job_id; use
++    `consultar_job_status_tool` para acompanhar o progresso.
++
++    Args:
++        batch_size (int): Tamanho do lote processado por vez (default 100).
++
++    Returns:
++        str: JSON com o job_id do job assíncrono disparado.
++    """
++    job = reindexar_embeddings.delay(batch_size=batch_size)
++    return json.dumps({"job_id": job.id, "status": "disparado"})
++
++
++def consultar_job_status_tool(job_id: str) -> str:
++    """
++    Consulta o status de um job assíncrono disparado por outra tool
++    (ex.: reindexar_embeddings_tool).
++
++    Use esta tool para fazer polling do progresso/conclusão de um job_id
++    retornado anteriormente.
++
++    Args:
++        job_id (str): Identificador do job retornado na chamada assíncrona.
++
++    Returns:
++        str: JSON com o estado do job (PENDING/PROGRESS/SUCCESS/FAILURE) e,
++             quando disponível, o resultado ou progresso parcial.
++    """
++    result = AsyncResult(job_id, app=celery_app)
++    payload = {"job_id": job_id, "estado": result.state}
++    if result.state == "PROGRESS":
++        payload["progresso"] = result.info
++    elif result.state == "SUCCESS":
++        payload["resultado"] = result.result
++    elif result.state == "FAILURE":
++        payload["erro"] = str(result.info)
++    return json.dumps(payload, ensure_ascii=False, default=str)
+diff --git a/start_server.sh b/start_server.sh
+index 6bf0a98..069e3cc 100755
+--- a/start_server.sh
++++ b/start_server.sh
+@@ -1,10 +1,10 @@
+ #!/bin/bash
+ 
+-# Script de inicialização do MCP Agentic RAG Server
++# Script de inicialização do MCP BNBO Server (P2 Linkage Criminal)
+ # Uso: ./start_server.sh
+ 
+ echo "============================================================"
+-echo "MCP AGENTIC RAG - INICIALIZANDO SERVIDOR"
++echo "MCP BNBO - INICIALIZANDO SERVIDOR"
+ echo "============================================================"
+ echo ""
+ 
+@@ -22,27 +22,19 @@ else
+     pip install -r requirements.txt
+ fi
+ 
+-# Verificar se Qdrant está rodando
++# Verificar se PostgreSQL/Redis estão rodando
+ echo ""
+-echo "Verificando Qdrant..."
+-if curl -s http://localhost:6333/ > /dev/null 2>&1; then
+-    echo "✓ Qdrant está rodando"
++echo "Verificando PostgreSQL/Redis..."
++if curl -s http://localhost:5432/ > /dev/null 2>&1 || nc -z localhost 5432 2>/dev/null; then
++    echo "✓ PostgreSQL está acessível"
+ else
+-    echo "✗ Qdrant não está rodando!"
+-    echo "  Iniciando Qdrant com Docker..."
++    echo "✗ PostgreSQL não está rodando!"
++    echo "  Iniciando PostgreSQL + Redis com Docker..."
+     docker compose up -d
+-    echo "  Aguardando Qdrant iniciar..."
++    echo "  Aguardando serviços iniciarem..."
+     sleep 5
+ fi
+ 
+-# Verificar API key
+-echo ""
+-if grep -q "your_firecrawl_api_key_here" .env 2>/dev/null; then
+-    echo "⚠ AVISO: API key do Firecrawl não configurada!"
+-    echo "  Edite o arquivo .env e adicione sua chave"
+-    echo "  A busca web não funcionará sem a chave"
+-fi
+-
+ # Iniciar servidor
+ echo ""
+ echo "============================================================"
+diff --git a/test_client.py b/test_client.py
+index f913c05..a55e234 100644
+--- a/test_client.py
++++ b/test_client.py
+@@ -1,150 +1,48 @@
+ """
+-Test Client for MCP Agentic RAG Application
+-Demonstrates how to interact with the MCP server and test both tools.
++Cliente de teste simples — chama as funções de ml.linkage diretamente
++(sem passar pelo transporte MCP), para validar a lógica do slice P2.
+ """
+ 
+-import requests
+ import json
+-import uuid
+ 
++from ml import linkage
+ 
+-def test_mcp_server(query: str, tool_name: str, server_url: str = "http://127.0.0.1:8080"):
+-    """
+-    Send a query to the MCP server via SSE and call a specific tool.
+-    
+-    Args:
+-        query: The user's question
+-        tool_name: Name of the MCP tool to call
+-        server_url: URL of the MCP server endpoint
+-    """
+-    print(f"\n{'=' * 70}")
+-    print(f"QUERY: {query}")
+-    print(f"TOOL: {tool_name}")
+-    print('=' * 70)
+-    
+-    try:
+-        # Step 1: Get SSE endpoint
+-        sse_response = requests.get(f"{server_url}/sse", stream=True, timeout=5)
+-        
+-        # Extract session endpoint from SSE stream
+-        session_endpoint = None
+-        for line in sse_response.iter_lines():
+-            if line:
+-                decoded = line.decode('utf-8')
+-                if decoded.startswith('data: '):
+-                    session_endpoint = decoded.replace('data: ', '').strip()
+-                    break
+-        
+-        if not session_endpoint:
+-            print("\nERROR: Could not get session endpoint from SSE")
+-            return
+-        
+-        # Step 2: Construct full messages URL
+-        messages_url = f"{server_url}{session_endpoint}"
+-        
+-        # Step 3: Create MCP JSON-RPC request to call the tool
+-        mcp_request = {
+-            "jsonrpc": "2.0",
+-            "id": str(uuid.uuid4()),
+-            "method": "tools/call",
+-            "params": {
+-                "name": tool_name,
+-                "arguments": {
+-                    "query": query
+-                }
+-            }
+-        }
+-        
+-        # Step 4: Send the request
+-        response = requests.post(
+-            messages_url,
+-            json=mcp_request,
+-            headers={"Content-Type": "application/json"},
+-            timeout=30
+-        )
+-        
+-        response.raise_for_status()
+-        result = response.json()
+-        
+-        # Pretty print the response
+-        print("\nRESPONSE:")
+-        if "result" in result:
+-            content = result["result"].get("content", [])
+-            if content and len(content) > 0:
+-                text = content[0].get("text", "No text in response")
+-                # Truncate long responses
+-                if len(text) > 500:
+-                    print(text[:500] + "...")
+-                else:
+-                    print(text)
+-            else:
+-                print(json.dumps(result["result"], indent=2))
+-        elif "error" in result:
+-            print(f"ERROR: {result['error']}")
+-        else:
+-            print(json.dumps(result, indent=2))
+-        
+-    except requests.exceptions.Timeout:
+-        print("\nERROR: Request timed out")
+-    except requests.exceptions.ConnectionError:
+-        print("\nERROR: Could not connect to server. Is it running?")
+-    except Exception as e:
+-        print(f"\nERROR: {e}")
+-    
+-    print('=' * 70)
+ 
+-
+-def main():
+-    """Run test cases for both MCP tools."""
+-    
++def test_buscar_similares():
+     print("\n" + "=" * 70)
+-    print("MCP AGENTIC RAG - TEST CLIENT")
++    print("TEST 1: buscar_ocorrencias_similares (texto_livre)")
+     print("=" * 70)
+-    print("\nThis script will test both tools:")
+-    print("  1. Python FAQ Retrieval Tool (Vector DB)")
+-    print("  2. Firecrawl Web Search Tool")
+-    print("\nMake sure the MCP server is running before executing these tests!")
+-    print("=" * 70)
+-    
+-    # Test Case 1: Python FAQ Query (should use vector DB tool)
+-    print("\n\n### TEST CASE 1: Python FAQ Query ###")
+-    print("Expected: Should use 'python_faq_retrieval_tool'")
+-    test_mcp_server(
+-        "Can you explain list comprehensions in Python?",
+-        "python_faq_retrieval_tool"
+-    )
+-    
+-    # Test Case 2: Another Python FAQ Query
+-    print("\n\n### TEST CASE 2: Python Decorators Query ###")
+-    print("Expected: Should use 'python_faq_retrieval_tool'")
+-    test_mcp_server(
+-        "What are Python decorators?",
+-        "python_faq_retrieval_tool"
++    resultados = linkage.buscar_ocorrencias_similares(
++        texto_livre="roubo de celular com uso de faca em via pública", top_k=5
+     )
+-    
+-    # Test Case 3: Web Search Query (should use web search tool)
+-    print("\n\n### TEST CASE 3: Web Search Query ###")
+-    print("Expected: Should use 'firecrawl_web_search_tool'")
+-    test_mcp_server(
+-        "What is the new Polars DataFrame library?",
+-        "firecrawl_web_search_tool"
+-    )
+-    
+-    # Test Case 4: Current Events Query
+-    print("\n\n### TEST CASE 4: Current Events Query ###")
+-    print("Expected: Should use 'firecrawl_web_search_tool'")
+-    test_mcp_server(
+-        "What are the latest developments in AI in 2026?",
+-        "firecrawl_web_search_tool"
++    print(json.dumps(resultados, indent=2, ensure_ascii=False, default=str)[:1500])
++    assert isinstance(resultados, list)
++    print("\n✓ SUCCESS")
++
++
++def test_agrupar_serie_criminal():
++    print("\n" + "=" * 70)
++    print("TEST 2: agrupar_serie_criminal (texto_livre)")
++    print("=" * 70)
++    resultado = linkage.agrupar_serie_criminal(
++        texto_livre="furto de bicicleta em via pública", top_k=20
+     )
+-    
+-    print("\n\n" + "=" * 70)
+-    print("TEST SUITE COMPLETED")
++    print(json.dumps(resultado, indent=2, ensure_ascii=False, default=str)[:1500])
++    assert "clusters" in resultado and "ruido" in resultado
++    print("\n✓ SUCCESS")
++
++
++def main():
++    print("\n" + "=" * 70)
++    print("MCP BNBO - TESTE DIRETO (ml.linkage)")
+     print("=" * 70)
+-    print("\nNote: Review the responses above to verify:")
+-    print("  - Correct tool selection for each query type")
+-    print("  - Relevant and accurate information retrieval")
+-    print("  - Proper error handling")
++    print("\nPré-requisito: docker compose up -d e base populada com data/synthetic.py\n")
++
++    test_buscar_similares()
++    test_agrupar_serie_criminal()
++
++    print("\n" + "=" * 70)
++    print("ALL TESTS COMPLETED")
+     print("=" * 70 + "\n")
+ 
+ 
+diff --git a/test_tools.py b/test_tools.py
+index 709a802..aa400d8 100644
+--- a/test_tools.py
++++ b/test_tools.py
+@@ -1,169 +1,105 @@
+ """
+-Simple Test Client for MCP Agentic RAG Application
+-Tests the tools by calling them directly via Python imports.
++Suíte de testes das tools do servidor MCP — chama as funções `*_tool`
++diretamente (sem o transporte MCP), para validar contrato e formato JSON.
+ """
+ 
+-import sys
+-import os
++import json
+ 
+-# Add current directory to path
+-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+-
+-# Import the FAQ engine and tools
+-from rag_app import FAQEngine, PYTHON_FAQ_TEXT
+ import requests
+-from dotenv import load_dotenv
+-
+-# Load environment
+-load_dotenv()
+-
+-# Configuration
+-QDRANT_URL = "http://localhost:6333"
+-COLLECTION_NAME = "python_faq_collection"
+-
+-
+-def test_vector_db_tool():
+-    """Test the Vector DB FAQ retrieval tool."""
+-    print("\n" + "=" * 70)
+-    print("TEST 1: VECTOR DB TOOL - Python FAQ Retrieval")
+-    print("=" * 70)
+-    
+-    # Initialize FAQ Engine
+-    print("\nInitializing FAQ Engine...")
+-    faq_engine = FAQEngine(qdrant_url=QDRANT_URL, collection_name=COLLECTION_NAME)
+-    
+-    # Test queries
+-    test_queries = [
+-        "Can you explain list comprehensions in Python?",
+-        "What are Python decorators?",
+-        "What is the difference between == and is?"
+-    ]
+-    
+-    for i, query in enumerate(test_queries, 1):
+-        print(f"\n--- Query {i} ---")
+-        print(f"Q: {query}")
+-        print("\nA:")
+-        try:
+-            result = faq_engine.answer_question(query)
+-            print(result[:500] + "..." if len(result) > 500 else result)
+-            print("\n✓ SUCCESS")
+-        except Exception as e:
+-            print(f"✗ ERROR: {e}")
+-    
+-    print("\n" + "=" * 70)
+ 
+-
+-def test_web_search_tool():
+-    """Test the Web Search tool."""
+-    print("\n" + "=" * 70)
+-    print("TEST 2: WEB SEARCH TOOL - Firecrawl API")
+-    print("=" * 70)
+-    
+-    api_key = os.getenv('FIRECRAWL_API_KEY')
+-    
+-    if not api_key or api_key == "your_firecrawl_api_key_here":
+-        print("\n⚠ WARNING: FIRECRAWL_API_KEY not configured!")
+-        print("Skipping web search test.")
+-        print("To enable: Add your API key to .env file")
+-        print("=" * 70)
+-        return
+-    
+-    test_queries = [
+-        "What is the Polars DataFrame library?",
+-        "Latest Python 3.12 features"
+-    ]
+-    
+-    url = "https://api.firecrawl.dev/v1/search"
+-    
+-    for i, query in enumerate(test_queries, 1):
+-        print(f"\n--- Query {i} ---")
+-        print(f"Q: {query}")
+-        print("\nSearching...")
+-        
+-        try:
+-            payload = {"query": query, "timeout": 60000}
+-            headers = {
+-                "Authorization": f"Bearer {api_key}",
+-                "Content-Type": "application/json"
+-            }
+-            
+-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+-            response.raise_for_status()
+-            
+-            results = response.json().get("data", [])
+-            
+-            if results:
+-                print(f"\nFound {len(results)} results:")
+-                for idx, result in enumerate(results[:3], 1):
+-                    if isinstance(result, dict):
+-                        title = result.get('title', 'No title')
+-                        url_link = result.get('url', 'No URL')
+-                        print(f"  {idx}. {title}")
+-                        print(f"     {url_link}")
+-                print("\n✓ SUCCESS")
+-            else:
+-                print("No results found")
+-                
+-        except requests.exceptions.Timeout:
+-            print("✗ ERROR: Request timed out")
+-        except Exception as e:
+-            print(f"✗ ERROR: {e}")
+-    
+-    print("\n" + "=" * 70)
++from server.tools.p2_linkage import (
++    buscar_ocorrencias_similares_tool,
++    obter_razoes_similaridade_tool,
++    agrupar_serie_criminal_tool,
++)
++from server.tools.util_jobs import (
++    reindexar_embeddings_tool,
++    consultar_job_status_tool,
++)
+ 
+ 
+ def test_server_health():
+-    """Test if MCP server is running."""
+     print("\n" + "=" * 70)
+     print("TEST 0: MCP SERVER HEALTH CHECK")
+     print("=" * 70)
+-    
+     try:
+         response = requests.get("http://127.0.0.1:8080/sse", timeout=5)
+         if response.status_code == 200:
+             print("\n✓ MCP Server is RUNNING on port 8080")
+-            print(f"  Response: {response.text[:100]}...")
+         else:
+             print(f"\n⚠ Server responded with status: {response.status_code}")
+     except requests.exceptions.ConnectionError:
+         print("\n✗ MCP Server is NOT running")
+-        print("  Start it with: python3 mcp_server.py")
++        print("  Start it with: MCP_TRANSPORT=sse python3 mcp_server.py")
+     except Exception as e:
+         print(f"\n✗ ERROR: {e}")
+-    
+     print("=" * 70)
+ 
+ 
+-def main():
+-    """Run all tests."""
++def test_buscar_ocorrencias_similares_tool():
++    print("\n" + "=" * 70)
++    print("TEST 1: buscar_ocorrencias_similares_tool")
++    print("=" * 70)
++    resultado_json = buscar_ocorrencias_similares_tool(
++        texto_livre="roubo de celular com uso de faca em via pública", top_k=5
++    )
++    resultado = json.loads(resultado_json)
++    assert isinstance(resultado, list)
++    print(json.dumps(resultado, indent=2, ensure_ascii=False)[:1000])
++    print("\n✓ SUCCESS")
++    return resultado
++
++
++def test_obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str):
++    print("\n" + "=" * 70)
++    print("TEST 2: obter_razoes_similaridade_tool")
++    print("=" * 70)
++    resultado_json = obter_razoes_similaridade_tool(bo_id_a, bo_id_b)
++    resultado = json.loads(resultado_json)
++    assert "score_final" in resultado
++    print(json.dumps(resultado, indent=2, ensure_ascii=False))
++    print("\n✓ SUCCESS")
++
++
++def test_agrupar_serie_criminal_tool():
++    print("\n" + "=" * 70)
++    print("TEST 3: agrupar_serie_criminal_tool")
++    print("=" * 70)
++    resultado_json = agrupar_serie_criminal_tool(
++        texto_livre="furto de bicicleta em via pública", top_k=20
++    )
++    resultado = json.loads(resultado_json)
++    assert "clusters" in resultado
++    print(json.dumps(resultado, indent=2, ensure_ascii=False)[:1000])
++    print("\n✓ SUCCESS")
++
++
++def test_jobs_async():
+     print("\n" + "=" * 70)
+-    print("MCP AGENTIC RAG - COMPREHENSIVE TEST SUITE")
++    print("TEST 4: reindexar_embeddings_tool + consultar_job_status_tool")
+     print("=" * 70)
+-    print("\nThis will test:")
+-    print("  0. MCP Server health")
+-    print("  1. Vector DB Tool (Python FAQ)")
+-    print("  2. Web Search Tool (Firecrawl)")
++    disparo = json.loads(reindexar_embeddings_tool(batch_size=50))
++    print(f"Job disparado: {disparo}")
++    status = json.loads(consultar_job_status_tool(disparo["job_id"]))
++    print(f"Status inicial: {status}")
++    assert "estado" in status
++    print("\n✓ SUCCESS")
++
++
++def main():
+     print("\n" + "=" * 70)
+-    
+-    # Test server
++    print("MCP BNBO - SUITE DE TESTES DAS TOOLS (P2 LINKAGE CRIMINAL)")
++    print("=" * 70)
++
+     test_server_health()
+-    
+-    # Test Vector DB
+-    test_vector_db_tool()
+-    
+-    # Test Web Search
+-    test_web_search_tool()
+-    
+-    # Summary
++    candidatos = test_buscar_ocorrencias_similares_tool()
++    if len(candidatos) >= 2:
++        test_obter_razoes_similaridade_tool(candidatos[0]["bo_id"], candidatos[1]["bo_id"])
++    test_agrupar_serie_criminal_tool()
++    test_jobs_async()
++
+     print("\n" + "=" * 70)
+     print("ALL TESTS COMPLETED")
+-    print("=" * 70)
+-    print("\n✓ Vector DB Tool: Tested")
+-    print("✓ Web Search Tool: Tested (if API key configured)")
+-    print("✓ MCP Server: Health checked")
+-    print("\nFor full MCP integration testing, use an MCP client like:")
+-    print("  - Claude Desktop")
+-    print("  - Custom MCP client application")
+     print("=" * 70 + "\n")
+ 
+ 
+-- 
+2.43.0
+

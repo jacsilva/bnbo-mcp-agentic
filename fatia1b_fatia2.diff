@@ -1,0 +1,836 @@
+diff --git a/.env.example b/.env.example
+index e778208..c3483a3 100644
+--- a/.env.example
++++ b/.env.example
+@@ -11,3 +11,9 @@ EMBED_MODEL_NAME=intfloat/multilingual-e5-large
+ MCP_TRANSPORT=stdio
+ MCP_HOST=127.0.0.1
+ MCP_PORT=8080
++
++# Cliente de referência LangGraph (opcional, client_reference/)
++MCP_SERVER_URL=http://127.0.0.1:8080/sse
++MCP_CLIENT_MODEL=anthropic:claude-sonnet-4-6
++# ANTHROPIC_API_KEY=...
++
+diff --git a/README.md b/README.md
+index fcf9b31..a54a665 100644
+--- a/README.md
++++ b/README.md
+@@ -98,15 +98,45 @@ python3 mcp_client.py
+ python3 mcp_client_http.py
+ ```
+ 
+-## 🛠️ Tools expostas (P2 — Linkage Criminal)
++### Cliente de referência LangGraph (opcional)
++
++Supervisor que orquestra as tools do MCP Server usando a LLM do cliente —
++ver [`client_reference/README.md`](client_reference/README.md). Deps
++isoladas; o servidor MCP não depende de LangChain/LangGraph.
++
++```bash
++MCP_TRANSPORT=sse python3 mcp_server.py &
++pip install -r client_reference/requirements.txt
++python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
++```
++
++## 🛠️ Tools expostas
+ 
+ | Tool | Tipo | Descrição |
+ |---|---|---|
+-| `buscar_ocorrencias_similares` | atômica | ANN por `bo_id` ou `texto_livre`; reranking semântico + estrutural |
+-| `obter_razoes_similaridade` | atômica | Explicabilidade: dimensões e pesos que vincularam dois BOs |
+-| `agrupar_serie_criminal` | composta | DBSCAN sobre candidatos similares, com score de coesão |
+-| `reindexar_embeddings` | assíncrona (Celery) | Recalcula embeddings de todos os BOs |
++| `buscar_ocorrencias_similares` | atômica (P2) | ANN por `bo_id` ou `texto_livre`; reranking semântico + estrutural |
++| `obter_razoes_similaridade` | atômica (P2) | Explicabilidade: dimensões e pesos que vincularam dois BOs |
++| `agrupar_serie_criminal` | composta (P2) | DBSCAN sobre candidatos similares, com score de coesão |
++| `reindexar_embeddings` | assíncrona (Celery) | Recalcula embeddings de todos os BOs — requer perfil `analista` ou `investigador` |
+ | `consultar_job_status` | transversal | Polling de status de jobs assíncronos por `job_id` |
++| `exportar_resultado` | transversal | Converte o JSON de outra tool para CSV/JSON/GeoJSON |
++| `listar_regioes_disponiveis` | transversal | Lista estados/municípios com BOs cadastrados |
++
++## 🔐 Camada de segurança transversal (Fatia 2)
++
++- **Perfis** (`server/security/perfis.py`): `publico < analista < investigador`.
++  O perfil nunca é aceito como parâmetro de tool — é resolvido a partir do
++  contexto de autenticação (`server/security/contexto.py`). Nesta fatia, a
++  resolução real de token (JWT/OAuth) ainda não está implementada; usa-se um
++  placeholder via variável de ambiente `MCP_PERFIL_ATUAL`, documentado como
++  decisão pendente do modelo.
++- **Redação de PII** (`server/security/redacao.py`): mascara CPF, telefone e
++  e-mail em campos de texto livre (`relato`) para perfis `publico`/`analista`;
++  `investigador` recebe o texto integral. Aplicada nas tools do P2 antes da
++  resposta sair do servidor.
++- **Auditoria** (`server/security/auditoria.py`): decorator `com_auditoria`
++  aplicado a toda tool, registrando cliente/perfil/tool/parâmetros/timestamp
++  na tabela `audit_log`.
+ 
+ ## 📁 Estrutura do projeto
+ 
+@@ -118,9 +148,15 @@ bnbo-mcp-agentic/
+ ├── test_client.py         # Testes diretos da lógica (ml.linkage)
+ ├── test_tools.py          # Testes das funções *_tool do servidor
+ ├── server/
+-│   └── tools/
+-│       ├── p2_linkage.py  # Tools MCP do P2 (wrappers sobre ml.linkage)
+-│       └── util_jobs.py   # Tools transversais de jobs assíncronos
++│   ├── tools/
++│   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre ml.linkage)
++│   │   ├── util_jobs.py     # Tools transversais de jobs assíncronos
++│   │   └── util_dominio.py  # exportar_resultado, listar_regioes_disponiveis
++│   └── security/
++│       ├── perfis.py        # Perfis publico/analista/investigador
++│       ├── contexto.py       # Resolução do perfil a partir do token (placeholder)
++│       ├── redacao.py         # Redação de PII em campos de texto livre
++│       └── auditoria.py        # Decorator com_auditoria + log em audit_log
+ ├── ml/
+ │   ├── embeddings.py      # e5-large + prefixos query:/passage: + cache Redis
+ │   └── linkage.py         # Busca vetorial, reranking, explicabilidade, DBSCAN
+@@ -129,8 +165,12 @@ bnbo-mcp-agentic/
+ │   └── tasks.py           # Task reindexar_embeddings
+ ├── data/
+ │   ├── db.py               # Pool de conexões PostgreSQL/pgvector
+-│   ├── schema.sql           # Tabela `bo` particionada, índice HNSW
++│   ├── schema.sql           # Tabelas bo/inquerito/tco/audit_log, índice HNSW
+ │   └── synthetic.py          # Gerador de BOs sintéticos para dev/teste
++├── client_reference/       # OPCIONAL: supervisor LangGraph (deps isoladas), usa a LLM do cliente
++│   ├── supervisor.py
++│   ├── run_supervisor.py
++│   └── requirements.txt
+ ├── docker-compose.yml      # PostgreSQL 16 (pgvector) + Redis 7
+ ├── requirements.txt
+ └── start_server.sh
+@@ -140,6 +180,13 @@ bnbo-mcp-agentic/
+ > `ano` (não pelo composto `(estado, ano)` do modelo completo); `estado` fica
+ > indexado em vez de particionado. Revisitar nas fatias de generalização.
+ 
++> Nota de simplificação (Fatia 2): `inquerito` e `tco` já existem no schema e
++> se ligam a `bo` por `bo_id`, mas a ETL de matching para os casos em que o
++> `bo_id` está ausente (heurística por proximidade temporal/espacial/natureza)
++> ainda não foi implementada — fica para uma generalização futura da
++> ingestão. A resolução de perfil via token real (JWT/OAuth) também é um
++> placeholder, conforme descrito na seção de segurança.
++
+ ## 🐛 Troubleshooting
+ 
+ ### "connection refused" ao conectar no PostgreSQL/Redis
+diff --git a/client_reference/README.md b/client_reference/README.md
+new file mode 100644
+index 0000000..737ac3a
+--- /dev/null
++++ b/client_reference/README.md
+@@ -0,0 +1,61 @@
++# Cliente de Referência — Supervisor LangGraph (opcional)
++
++Demonstra como orquestrar as tools do MCP Server usando um supervisor
++LangGraph do lado do **cliente**, com a LLM escolhida pelo próprio cliente.
++O servidor MCP permanece puro (sem LLM); este pacote só consome as tools via
++MCP/SSE — não é importado pelo servidor e tem dependências isoladas.
++
++## Por que isso existe
++
++O modelo prevê que o servidor MCP nunca incorpore um LLM (evita lock-in de
++modelo). Mas a LLM do cliente pode interpretar mal os schemas das tools. Este
++cliente de referência entrega uma orquestração testada — supervisor →
++sub-agente por projeto → tools via MCP — sem impor qual modelo usar.
++
++## Instalação (isolada do servidor)
++
++```bash
++cd client_reference
++python3 -m venv venv
++source venv/bin/activate
++pip install -r requirements.txt
++pip install langchain-anthropic   # ou langchain-openai, etc., conforme MCP_CLIENT_MODEL
++```
++
++## Configuração
++
++No `.env` (raiz do projeto) ou variáveis de ambiente:
++
++```bash
++MCP_SERVER_URL=http://127.0.0.1:8080/sse
++MCP_CLIENT_MODEL=anthropic:claude-sonnet-4-6   # qualquer modelo suportado por init_chat_model
++ANTHROPIC_API_KEY=...                          # ou a chave do provedor escolhido
++```
++
++## Uso
++
++```bash
++# Terminal 1 — servidor MCP (raiz do projeto)
++MCP_TRANSPORT=sse python3 mcp_server.py
++
++# Terminal 2 — supervisor
++python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
++```
++
++## Estrutura
++
++- `supervisor.py` — monta o `MultiServerMCPClient`, filtra as tools do P2,
++  cria o sub-agente `p2_linkage_agent` e o supervisor.
++- `run_supervisor.py` — CLI de exemplo.
++
++## Expandindo para P1/P4
++
++Quando as tools de Observatório (P1) e Atlas (P4) forem registradas no
++servidor (Fatias 3 e 4), adicione em `supervisor.py`:
++
++1. Um novo conjunto `P1_TOOL_NAMES` / `P4_TOOL_NAMES`.
++2. Um `create_react_agent` por projeto, com seu próprio prompt.
++3. Inclua os novos agentes na lista passada a `create_supervisor`.
++
++Trocar a LLM do cliente (`MCP_CLIENT_MODEL`) não exige nenhuma mudança no
++servidor — é a validação central deste padrão de desacoplamento.
+diff --git a/client_reference/__init__.py b/client_reference/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/client_reference/requirements.txt b/client_reference/requirements.txt
+new file mode 100644
+index 0000000..7d51bd4
+--- /dev/null
++++ b/client_reference/requirements.txt
+@@ -0,0 +1,12 @@
++# Dependências do cliente de referência LangGraph
++# Isoladas do requirements.txt do servidor MCP — o servidor NÃO depende de LangChain/LangGraph.
++
++langchain>=0.3.0
++langchain-mcp-adapters>=0.1.0
++langgraph>=0.2.0
++langgraph-supervisor>=0.0.4
++python-dotenv>=1.0.0
++
++# Provedor de LLM do cliente (escolha o(s) que for usar):
++# langchain-anthropic>=0.3.0
++# langchain-openai>=0.2.0
+diff --git a/client_reference/run_supervisor.py b/client_reference/run_supervisor.py
+new file mode 100644
+index 0000000..051530d
+--- /dev/null
++++ b/client_reference/run_supervisor.py
+@@ -0,0 +1,35 @@
++"""
++CLI de exemplo para o supervisor LangGraph de referência.
++
++Uso:
++    MCP_TRANSPORT=sse python3 mcp_server.py &
++    python3 client_reference/run_supervisor.py "Busque ocorrências similares a roubo de celular com faca"
++"""
++
++import asyncio
++import sys
++
++from client_reference.supervisor import build_supervisor
++
++
++async def main():
++    if len(sys.argv) < 2:
++        print("Uso: python3 client_reference/run_supervisor.py \"<pergunta>\"")
++        sys.exit(1)
++
++    query = " ".join(sys.argv[1:])
++    supervisor = await build_supervisor()
++
++    result = await supervisor.ainvoke({"messages": [{"role": "user", "content": query}]})
++
++    print("\n" + "=" * 70)
++    print("RESPOSTA DO SUPERVISOR")
++    print("=" * 70)
++    for message in result["messages"]:
++        role = getattr(message, "type", message.get("role") if isinstance(message, dict) else "?")
++        content = getattr(message, "content", message.get("content") if isinstance(message, dict) else message)
++        print(f"\n[{role}] {content}")
++
++
++if __name__ == "__main__":
++    asyncio.run(main())
+diff --git a/client_reference/supervisor.py b/client_reference/supervisor.py
+new file mode 100644
+index 0000000..cbda23d
+--- /dev/null
++++ b/client_reference/supervisor.py
+@@ -0,0 +1,88 @@
++"""
++Cliente de referência opcional: supervisor LangGraph sobre o MCP Server.
++
++Princípio preservado do modelo (§3.1): o MCP Server só expõe tools — todo o
++raciocínio/roteamento acontece aqui, no cliente, usando a LLM que o cliente
++escolher (model-agnostic via `init_chat_model`). O servidor nunca embarca LLM.
++
++`MultiServerMCPClient` (langchain-mcp-adapters) carrega as tools do MCP
++Server via SSE/HTTP e as converte em `BaseTool` do LangChain. Um supervisor
++(`langgraph-supervisor`) roteia para um sub-agente por projeto — nesta fatia,
++apenas o sub-agente do P2 (Linkage Criminal). O supervisor só roteia; as
++tools rodam no servidor via MCP.
++"""
++
++import os
++
++from dotenv import load_dotenv
++from langchain.chat_models import init_chat_model
++from langchain_mcp_adapters.client import MultiServerMCPClient
++from langgraph.prebuilt import create_react_agent
++from langgraph_supervisor import create_supervisor
++
++load_dotenv()
++
++MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8080/sse")
++CLIENT_MODEL = os.getenv("MCP_CLIENT_MODEL", "anthropic:claude-sonnet-4-6")
++
++# Tools do P2 expostas pelo servidor (server/tools/p2_linkage.py).
++P2_TOOL_NAMES = {
++    "buscar_ocorrencias_similares",
++    "obter_razoes_similaridade",
++    "agrupar_serie_criminal",
++}
++
++P2_AGENT_PROMPT = (
++    "Você é o agente especialista em Linkage Criminal (P2). Use as tools "
++    "disponíveis para buscar ocorrências similares, explicar por que dois "
++    "BOs foram vinculados, ou agrupar uma possível série criminal. "
++    "Responda de forma objetiva, citando bo_id e scores quando relevante."
++)
++
++SUPERVISOR_PROMPT = (
++    "Você é o supervisor da plataforma de inteligência em segurança "
++    "pública. Roteie cada pedido do usuário para o sub-agente apropriado. "
++    "Nesta fatia, apenas o agente de Linkage Criminal (P2) está disponível: "
++    "use-o para qualquer pergunta sobre ocorrências similares, vínculos "
++    "entre BOs ou séries criminais. Você nunca executa tools diretamente; "
++    "delegue sempre ao sub-agente."
++)
++
++
++async def build_supervisor():
++    """
++    Conecta ao MCP Server, carrega as tools do P2 e monta o supervisor
++    LangGraph com um único sub-agente (P2 Linkage Criminal).
++
++    Ao adicionar as tools do P1 (Observatório) e P4 (Atlas) nas próximas
++    fatias, basta filtrar `all_tools` por nome (como feito para o P2) e
++    criar um `create_react_agent` adicional para cada um, passando a lista
++    de agentes para `create_supervisor`.
++    """
++    client = MultiServerMCPClient(
++        {
++            "bnbo": {
++                "url": MCP_SERVER_URL,
++                "transport": "sse",
++            }
++        }
++    )
++    all_tools = await client.get_tools()
++    p2_tools = [t for t in all_tools if t.name in P2_TOOL_NAMES]
++
++    model = init_chat_model(CLIENT_MODEL)
++
++    p2_agent = create_react_agent(
++        model,
++        tools=p2_tools,
++        name="p2_linkage_agent",
++        prompt=P2_AGENT_PROMPT,
++    )
++
++    supervisor = create_supervisor(
++        agents=[p2_agent],
++        model=model,
++        prompt=SUPERVISOR_PROMPT,
++    ).compile()
++
++    return supervisor
+diff --git a/data/schema.sql b/data/schema.sql
+index ee91dca..a0cb383 100644
+--- a/data/schema.sql
++++ b/data/schema.sql
+@@ -46,3 +46,42 @@ CREATE INDEX IF NOT EXISTS idx_bo_embedding_hnsw ON bo
+     WITH (ef_construction = 200);
+ 
+ COMMENT ON COLUMN bo.embedding IS 'Embedding multilingual-e5-large (768d) do relato, prefixo passage: aplicado na ingestão.';
++
++-- Fundação completa (Fatia 2) ------------------------------------------------
++
++CREATE TABLE IF NOT EXISTS inquerito (
++    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    bo_id           UUID REFERENCES bo (id),
++    numero          TEXT,
++    delegacia       TEXT,
++    estado          TEXT NOT NULL,
++    status          TEXT NOT NULL DEFAULT 'em_andamento',
++    aberto_em       TIMESTAMPTZ NOT NULL DEFAULT now(),
++    concluido_em    TIMESTAMPTZ
++);
++
++CREATE INDEX IF NOT EXISTS idx_inquerito_bo_id ON inquerito (bo_id);
++CREATE INDEX IF NOT EXISTS idx_inquerito_delegacia_status ON inquerito (delegacia, status);
++
++CREATE TABLE IF NOT EXISTS tco (
++    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    bo_id           UUID REFERENCES bo (id),
++    numero          TEXT,
++    estado          TEXT NOT NULL,
++    status          TEXT NOT NULL DEFAULT 'registrado',
++    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++
++CREATE INDEX IF NOT EXISTS idx_tco_bo_id ON tco (bo_id);
++
++-- Trilha de auditoria de acesso às tools (camada de segurança transversal).
++CREATE TABLE IF NOT EXISTS audit_log (
++    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    cliente         TEXT,
++    perfil          TEXT NOT NULL,
++    tool_name       TEXT NOT NULL,
++    parametros      JSONB,
++    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++
++CREATE INDEX IF NOT EXISTS idx_audit_log_tool_data ON audit_log (tool_name, criado_em);
+diff --git a/mcp_server.py b/mcp_server.py
+index a264779..8970439 100644
+--- a/mcp_server.py
++++ b/mcp_server.py
+@@ -1,6 +1,7 @@
+ """
+ MCP Server Module
+-Servidor MCP do domínio de segurança pública (BOs) — Fatia 1: P2 Linkage Criminal.
++Servidor MCP do domínio de segurança pública (BOs) — Fatias 0-2: fundação +
++P2 Linkage Criminal + camada de segurança transversal (perfis/PII/auditoria).
+ 
+ O servidor expõe apenas tools (sem LLM embarcada); o raciocínio/roteamento
+ fica no cliente, conforme o princípio de desacoplamento de modelo.
+@@ -20,6 +21,10 @@ from server.tools.util_jobs import (
+     reindexar_embeddings_tool,
+     consultar_job_status_tool,
+ )
++from server.tools.util_dominio import (
++    exportar_resultado_tool,
++    listar_regioes_disponiveis_tool,
++)
+ 
+ load_dotenv()
+ 
+@@ -33,6 +38,8 @@ mcp_server.tool(name="obter_razoes_similaridade")(obter_razoes_similaridade_tool
+ mcp_server.tool(name="agrupar_serie_criminal")(agrupar_serie_criminal_tool)
+ mcp_server.tool(name="reindexar_embeddings")(reindexar_embeddings_tool)
+ mcp_server.tool(name="consultar_job_status")(consultar_job_status_tool)
++mcp_server.tool(name="exportar_resultado")(exportar_resultado_tool)
++mcp_server.tool(name="listar_regioes_disponiveis")(listar_regioes_disponiveis_tool)
+ 
+ 
+ if __name__ == "__main__":
+@@ -45,8 +52,10 @@ if __name__ == "__main__":
+     print("  1. buscar_ocorrencias_similares")
+     print("  2. obter_razoes_similaridade")
+     print("  3. agrupar_serie_criminal")
+-    print("  4. reindexar_embeddings (assincrona, Celery)")
++    print("  4. reindexar_embeddings (assincrona, Celery; requer perfil analista+)")
+     print("  5. consultar_job_status")
++    print("  6. exportar_resultado (csv/json/geojson)")
++    print("  7. listar_regioes_disponiveis")
+ 
+     if transport == "sse":
+         print(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")
+diff --git a/ml/linkage.py b/ml/linkage.py
+index 2158946..1d112a3 100644
+--- a/ml/linkage.py
++++ b/ml/linkage.py
+@@ -115,6 +115,7 @@ def buscar_ocorrencias_similares(
+                 "natureza": candidato["natureza"],
+                 "estado": candidato["estado"],
+                 "municipio": candidato["municipio"],
++                "relato": candidato["relato"],
+                 "data_hora": candidato["data_hora"].isoformat(),
+                 "score_semantico": round(candidato["score_semantico"], 4),
+                 "score_final": round(score_final, 4),
+diff --git a/server/security/__init__.py b/server/security/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/server/security/auditoria.py b/server/security/auditoria.py
+new file mode 100644
+index 0000000..e1a9fcb
+--- /dev/null
++++ b/server/security/auditoria.py
+@@ -0,0 +1,44 @@
++"""
++Auditoria de acesso — registra cliente/perfil/tool/parâmetros/timestamp em
++`audit_log` para toda chamada de tool do servidor. Desacoplada da lógica de
++cada tool: aplicada via decorator na própria função MCP.
++"""
++
++import functools
++import json
++
++from data.db import get_connection
++from server.security.contexto import get_cliente_atual, get_perfil_atual
++
++
++def log_acesso(tool_name: str, parametros: dict) -> None:
++    cliente = get_cliente_atual()
++    perfil = get_perfil_atual()
++    with get_connection() as conn:
++        with conn.cursor() as cur:
++            cur.execute(
++                """
++                INSERT INTO audit_log (cliente, perfil, tool_name, parametros)
++                VALUES (%s, %s, %s, %s)
++                """,
++                (cliente, perfil, tool_name, json.dumps(parametros, default=str)),
++            )
++        conn.commit()
++
++
++def com_auditoria(tool_name: str):
++    """Decorator que registra a chamada em `audit_log` antes de executar a tool."""
++
++    def decorator(func):
++        @functools.wraps(func)
++        def wrapper(*args, **kwargs):
++            try:
++                log_acesso(tool_name, kwargs if kwargs else {"args": args})
++            except Exception:
++                # Falha de auditoria não deve impedir a execução da tool.
++                pass
++            return func(*args, **kwargs)
++
++        return wrapper
++
++    return decorator
+diff --git a/server/security/contexto.py b/server/security/contexto.py
+new file mode 100644
+index 0000000..2d40fbf
+--- /dev/null
++++ b/server/security/contexto.py
+@@ -0,0 +1,31 @@
++"""
++Resolução do perfil de acesso a partir do token de autenticação da requisição.
++
++IMPORTANTE: o perfil nunca deve ser aceito como parâmetro de tool (isso
++permitiria que o próprio cliente se autoatribuísse um nível de acesso maior).
++Ele deve vir de um token validado (JWT/OAuth) anexado à conexão MCP.
++
++Esta implementação é um placeholder para a Fatia 2: a validação real de
++token (assinatura, expiração, claims) e a integração com o provedor de
++identidade do cliente ficam fora do escopo deste slice e estão listadas
++como decisão pendente do modelo. Por ora, resolve o perfil a partir da
++variável de ambiente `MCP_PERFIL_ATUAL`, simulando o claim que um token
++validado traria.
++"""
++
++import os
++
++from server.security.perfis import PUBLICO
++
++PERFIS_VALIDOS = {"publico", "analista", "investigador"}
++
++
++def get_perfil_atual() -> str:
++    """Retorna o perfil de acesso da requisição atual (placeholder)."""
++    perfil = os.getenv("MCP_PERFIL_ATUAL", PUBLICO)
++    return perfil if perfil in PERFIS_VALIDOS else PUBLICO
++
++
++def get_cliente_atual() -> str:
++    """Identificador do cliente autenticado (placeholder)."""
++    return os.getenv("MCP_CLIENTE_ATUAL", "desconhecido")
+diff --git a/server/security/perfis.py b/server/security/perfis.py
+new file mode 100644
+index 0000000..f462b2c
+--- /dev/null
++++ b/server/security/perfis.py
+@@ -0,0 +1,25 @@
++"""
++Perfis de acesso. Ordem crescente de privilégio: público < analista < investigador.
++
++O perfil NUNCA é aceito como parâmetro de input de uma tool — ele é resolvido
++a partir do contexto de autenticação da requisição (ver `contexto.py`), para
++que um cliente não possa se autoatribuir um nível de acesso maior.
++"""
++
++PUBLICO = "publico"
++ANALISTA = "analista"
++INVESTIGADOR = "investigador"
++
++NIVEL = {
++    PUBLICO: 0,
++    ANALISTA: 1,
++    INVESTIGADOR: 2,
++}
++
++
++def nivel(perfil: str) -> int:
++    return NIVEL.get(perfil, NIVEL[PUBLICO])
++
++
++def tem_acesso_minimo(perfil: str, minimo: str) -> bool:
++    return nivel(perfil) >= nivel(minimo)
+diff --git a/server/security/redacao.py b/server/security/redacao.py
+new file mode 100644
+index 0000000..7767f82
+--- /dev/null
++++ b/server/security/redacao.py
+@@ -0,0 +1,48 @@
++"""
++Redação de PII — desacoplada da lógica de domínio.
++
++Aplica-se sobre os campos textuais livres (ex.: `relato`) retornados pelas
++tools, antes da resposta sair do servidor. O perfil `investigador` vê o
++texto integral; `analista` e `publico` recebem o texto com PII mascarada.
++"""
++
++import re
++
++from server.security.perfis import INVESTIGADOR
++
++_PADROES_PII = [
++    (re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"), "[CPF_REDIGIDO]"),
++    (re.compile(r"\(\d{2}\)\s?\d{4,5}-?\d{4}\b"), "[TELEFONE_REDIGIDO]"),
++    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[EMAIL_REDIGIDO]"),
++]
++
++
++def redigir_texto(texto: str) -> str:
++    """Mascara CPF, telefone e e-mail em um texto livre."""
++    if not texto:
++        return texto
++    for padrao, substituto in _PADROES_PII:
++        texto = padrao.sub(substituto, texto)
++    return texto
++
++
++def redigir_campo(valor, perfil: str):
++    """Aplica redação a um valor textual de acordo com o perfil."""
++    if perfil == INVESTIGADOR or not isinstance(valor, str):
++        return valor
++    return redigir_texto(valor)
++
++
++def redigir_dict(registro: dict, perfil: str, campos: tuple[str, ...] = ("relato",)) -> dict:
++    """Retorna uma cópia do dict com os `campos` redigidos conforme o perfil."""
++    if perfil == INVESTIGADOR:
++        return registro
++    redigido = dict(registro)
++    for campo in campos:
++        if campo in redigido:
++            redigido[campo] = redigir_campo(redigido[campo], perfil)
++    return redigido
++
++
++def redigir_lista(registros: list[dict], perfil: str, campos: tuple[str, ...] = ("relato",)) -> list[dict]:
++    return [redigir_dict(r, perfil, campos) for r in registros]
+diff --git a/server/tools/p2_linkage.py b/server/tools/p2_linkage.py
+index 471ab0c..af5ec6e 100644
+--- a/server/tools/p2_linkage.py
++++ b/server/tools/p2_linkage.py
+@@ -9,8 +9,12 @@ chamar cada tool — devem ser precisas.
+ import json
+ 
+ from ml import linkage
++from server.security.auditoria import com_auditoria
++from server.security.contexto import get_perfil_atual
++from server.security.redacao import redigir_lista
+ 
+ 
++@com_auditoria("buscar_ocorrencias_similares")
+ def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int = 10) -> str:
+     """
+     Busca Boletins de Ocorrência semanticamente e estruturalmente similares a um
+@@ -31,9 +35,11 @@ def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", to
+     resultados = linkage.buscar_ocorrencias_similares(
+         bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k
+     )
++    resultados = redigir_lista(resultados, get_perfil_atual())
+     return json.dumps(resultados, ensure_ascii=False, default=str)
+ 
+ 
++@com_auditoria("obter_razoes_similaridade")
+ def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
+     """
+     Explica por que dois BOs foram considerados similares, detalhando as
+@@ -55,6 +61,7 @@ def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
+     return json.dumps(resultado, ensure_ascii=False, default=str)
+ 
+ 
++@com_auditoria("agrupar_serie_criminal")
+ def agrupar_serie_criminal_tool(
+     bo_id: str = "", texto_livre: str = "", top_k: int = 30, eps: float = 0.35, min_samples: int = 2
+ ) -> str:
+@@ -80,4 +87,8 @@ def agrupar_serie_criminal_tool(
+     resultado = linkage.agrupar_serie_criminal(
+         bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k, eps=eps, min_samples=min_samples
+     )
++    perfil = get_perfil_atual()
++    for cluster in resultado["clusters"]:
++        cluster["membros"] = redigir_lista(cluster["membros"], perfil)
++    resultado["ruido"] = redigir_lista(resultado["ruido"], perfil)
+     return json.dumps(resultado, ensure_ascii=False, default=str)
+diff --git a/server/tools/util_dominio.py b/server/tools/util_dominio.py
+new file mode 100644
+index 0000000..a0f28b3
+--- /dev/null
++++ b/server/tools/util_dominio.py
+@@ -0,0 +1,86 @@
++"""
++Tools utilitárias transversais — export de resultados e metadados de domínio.
++"""
++
++import csv
++import io
++import json
++
++from data.db import get_connection
++from server.security.auditoria import com_auditoria
++
++
++@com_auditoria("exportar_resultado")
++def exportar_resultado_tool(dados_json: str, formato: str = "json") -> str:
++    """
++    Converte o resultado JSON de outra tool (ex.: buscar_ocorrencias_similares)
++    para o formato solicitado: csv, json ou geojson.
++
++    Use esta tool quando o usuário quiser baixar/exportar um resultado já
++    obtido em outro formato, em vez de receber o JSON bruto.
++
++    Args:
++        dados_json (str): JSON (lista de objetos ou dict com "clusters"/"membros")
++                           retornado por outra tool do domínio.
++        formato (str): Um de "csv", "json" ou "geojson" (default "json").
++
++    Returns:
++        str: Conteúdo já formatado no formato solicitado.
++    """
++    dados = json.loads(dados_json)
++    registros = dados if isinstance(dados, list) else dados.get("clusters") or dados.get("membros") or [dados]
++
++    if formato == "json":
++        return json.dumps(registros, ensure_ascii=False, default=str)
++
++    if formato == "csv":
++        if not registros:
++            return ""
++        buffer = io.StringIO()
++        writer = csv.DictWriter(buffer, fieldnames=list(registros[0].keys()))
++        writer.writeheader()
++        for registro in registros:
++            writer.writerow({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
++                              for k, v in registro.items()})
++        return buffer.getvalue()
++
++    if formato == "geojson":
++        features = []
++        for registro in registros:
++            lat, lng = registro.get("lat"), registro.get("lng")
++            if lat is None or lng is None:
++                continue
++            features.append({
++                "type": "Feature",
++                "geometry": {"type": "Point", "coordinates": [lng, lat]},
++                "properties": {k: v for k, v in registro.items() if k not in ("lat", "lng")},
++            })
++        return json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, default=str)
++
++    raise ValueError(f"Formato não suportado: {formato}. Use csv, json ou geojson.")
++
++
++@com_auditoria("listar_regioes_disponiveis")
++def listar_regioes_disponiveis_tool() -> str:
++    """
++    Lista os estados e municípios com Boletins de Ocorrência cadastrados na base.
++
++    Use esta tool quando o usuário quiser saber quais regiões podem ser
++    consultadas antes de fazer uma busca geográfica ou estatística.
++
++    Returns:
++        str: JSON com a lista de estados e, para cada um, os municípios
++             disponíveis.
++    """
++    with get_connection() as conn:
++        with conn.cursor() as cur:
++            cur.execute("SELECT DISTINCT estado, municipio FROM bo ORDER BY estado, municipio")
++            rows = cur.fetchall()
++
++    regioes: dict[str, list[str]] = {}
++    for estado, municipio in rows:
++        regioes.setdefault(estado, [])
++        if municipio:
++            regioes[estado].append(municipio)
++
++    return json.dumps(regioes, ensure_ascii=False)
+diff --git a/server/tools/util_jobs.py b/server/tools/util_jobs.py
+index 5698678..b019e68 100644
+--- a/server/tools/util_jobs.py
++++ b/server/tools/util_jobs.py
+@@ -8,8 +8,12 @@ from celery.result import AsyncResult
+ 
+ from jobs.celery_app import celery_app
+ from jobs.tasks import reindexar_embeddings
++from server.security.auditoria import com_auditoria
++from server.security.contexto import get_perfil_atual
++from server.security.perfis import ANALISTA, tem_acesso_minimo
+ 
+ 
++@com_auditoria("reindexar_embeddings")
+ def reindexar_embeddings_tool(batch_size: int = 100) -> str:
+     """
+     Dispara, de forma assíncrona, a reindexação dos embeddings de todos os BOs
+@@ -25,10 +29,14 @@ def reindexar_embeddings_tool(batch_size: int = 100) -> str:
+     Returns:
+         str: JSON com o job_id do job assíncrono disparado.
+     """
++    if not tem_acesso_minimo(get_perfil_atual(), ANALISTA):
++        return json.dumps({"erro": "Perfil insuficiente para disparar reindexação. Requer analista ou investigador."})
++
+     job = reindexar_embeddings.delay(batch_size=batch_size)
+     return json.dumps({"job_id": job.id, "status": "disparado"})
+ 
+ 
++@com_auditoria("consultar_job_status")
+ def consultar_job_status_tool(job_id: str) -> str:
+     """
+     Consulta o status de um job assíncrono disparado por outra tool
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/test_security.py b/tests/test_security.py
+new file mode 100644
+index 0000000..b642504
+--- /dev/null
++++ b/tests/test_security.py
+@@ -0,0 +1,39 @@
++"""Testes unitários da camada de segurança (sem dependência de banco/rede)."""
++
++from server.security.perfis import ANALISTA, INVESTIGADOR, PUBLICO, tem_acesso_minimo
++from server.security.redacao import redigir_dict, redigir_lista, redigir_texto
++
++
++def test_redigir_texto_mascara_cpf_telefone_email():
++    texto = "Vítima CPF 123.456.789-00, tel (11) 91234-5678, email vitima@exemplo.com."
++    redigido = redigir_texto(texto)
++    assert "[CPF_REDIGIDO]" in redigido
++    assert "[TELEFONE_REDIGIDO]" in redigido
++    assert "[EMAIL_REDIGIDO]" in redigido
++    assert "123.456.789-00" not in redigido
++
++
++def test_redigir_dict_preserva_investigador():
++    registro = {"relato": "CPF 123.456.789-00 da vítima."}
++    assert redigir_dict(registro, INVESTIGADOR) == registro
++    assert redigir_dict(registro, PUBLICO)["relato"] != registro["relato"]
++
++
++def test_redigir_lista():
++    registros = [{"relato": "contato vitima@exemplo.com"}]
++    redigidos = redigir_lista(registros, PUBLICO)
++    assert "[EMAIL_REDIGIDO]" in redigidos[0]["relato"]
++
++
++def test_tem_acesso_minimo():
++    assert tem_acesso_minimo(INVESTIGADOR, ANALISTA)
++    assert tem_acesso_minimo(ANALISTA, ANALISTA)
++    assert not tem_acesso_minimo(PUBLICO, ANALISTA)
++
++
++if __name__ == "__main__":
++    test_redigir_texto_mascara_cpf_telefone_email()
++    test_redigir_dict_preserva_investigador()
++    test_redigir_lista()
++    test_tem_acesso_minimo()
++    print("Todos os testes de segurança passaram.")

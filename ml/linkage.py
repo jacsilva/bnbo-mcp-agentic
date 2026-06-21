@@ -115,6 +115,7 @@ def buscar_ocorrencias_similares(
                 "natureza": candidato["natureza"],
                 "estado": candidato["estado"],
                 "municipio": candidato["municipio"],
+                "relato": candidato["relato"],
                 "data_hora": candidato["data_hora"].isoformat(),
                 "score_semantico": round(candidato["score_semantico"], 4),
                 "score_final": round(score_final, 4),

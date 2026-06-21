@@ -46,3 +46,61 @@ CREATE INDEX IF NOT EXISTS idx_bo_embedding_hnsw ON bo
     WITH (ef_construction = 200);
 
 COMMENT ON COLUMN bo.embedding IS 'Embedding multilingual-e5-large (768d) do relato, prefixo passage: aplicado na ingestão.';
+
+-- Fundação completa (Fatia 2) ------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS inquerito (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bo_id           UUID REFERENCES bo (id),
+    numero          TEXT,
+    delegacia       TEXT,
+    estado          TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'em_andamento',
+    aberto_em       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    concluido_em    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_inquerito_bo_id ON inquerito (bo_id);
+CREATE INDEX IF NOT EXISTS idx_inquerito_delegacia_status ON inquerito (delegacia, status);
+
+CREATE TABLE IF NOT EXISTS tco (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bo_id           UUID REFERENCES bo (id),
+    numero          TEXT,
+    estado          TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'registrado',
+    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tco_bo_id ON tco (bo_id);
+
+-- Trilha de auditoria de acesso às tools (camada de segurança transversal).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cliente         TEXT,
+    perfil          TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    parametros      JSONB,
+    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_tool_data ON audit_log (tool_name, criado_em);
+
+-- Fatia 3 — Observatório (P1) -------------------------------------------------
+
+-- Snapshot persistido pelo job noturno de detecção de anomalias; lido pelas
+-- tools `listar_delegacias_com_alerta` e `subscrever_alertas` (polling, não
+-- push real — ver nota de simplificação no README).
+CREATE TABLE IF NOT EXISTS alerta_observatorio (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    estado          TEXT NOT NULL,
+    municipio       TEXT,
+    dominio         TEXT NOT NULL,
+    natureza        TEXT NOT NULL,
+    mes             DATE NOT NULL,
+    z_score         DOUBLE PRECISION NOT NULL,
+    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerta_observatorio_estado_mes ON alerta_observatorio (estado, mes);
+CREATE INDEX IF NOT EXISTS idx_alerta_observatorio_criado_em ON alerta_observatorio (criado_em);

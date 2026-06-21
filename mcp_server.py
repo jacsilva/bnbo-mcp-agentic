@@ -1,6 +1,7 @@
 """
 MCP Server Module
-Servidor MCP do domínio de segurança pública (BOs) — Fatia 1: P2 Linkage Criminal.
+Servidor MCP do domínio de segurança pública (BOs) — Fatias 0-2: fundação +
+P2 Linkage Criminal + camada de segurança transversal (perfis/PII/auditoria).
 
 O servidor expõe apenas tools (sem LLM embarcada); o raciocínio/roteamento
 fica no cliente, conforme o princípio de desacoplamento de modelo.
@@ -20,6 +21,16 @@ from server.tools.util_jobs import (
     reindexar_embeddings_tool,
     consultar_job_status_tool,
 )
+from server.tools.util_dominio import (
+    exportar_resultado_tool,
+    listar_regioes_disponiveis_tool,
+)
+from server.tools.p1_observatorio import (
+    detectar_anomalias_estatisticas_tool,
+    calcular_taxa_elucidacao_tool,
+    listar_delegacias_com_alerta_tool,
+    subscrever_alertas_tool,
+)
 
 load_dotenv()
 
@@ -33,6 +44,12 @@ mcp_server.tool(name="obter_razoes_similaridade")(obter_razoes_similaridade_tool
 mcp_server.tool(name="agrupar_serie_criminal")(agrupar_serie_criminal_tool)
 mcp_server.tool(name="reindexar_embeddings")(reindexar_embeddings_tool)
 mcp_server.tool(name="consultar_job_status")(consultar_job_status_tool)
+mcp_server.tool(name="exportar_resultado")(exportar_resultado_tool)
+mcp_server.tool(name="listar_regioes_disponiveis")(listar_regioes_disponiveis_tool)
+mcp_server.tool(name="detectar_anomalias_estatisticas")(detectar_anomalias_estatisticas_tool)
+mcp_server.tool(name="calcular_taxa_elucidacao")(calcular_taxa_elucidacao_tool)
+mcp_server.tool(name="listar_delegacias_com_alerta")(listar_delegacias_com_alerta_tool)
+mcp_server.tool(name="subscrever_alertas")(subscrever_alertas_tool)
 
 
 if __name__ == "__main__":
@@ -45,8 +62,14 @@ if __name__ == "__main__":
     print("  1. buscar_ocorrencias_similares")
     print("  2. obter_razoes_similaridade")
     print("  3. agrupar_serie_criminal")
-    print("  4. reindexar_embeddings (assincrona, Celery)")
+    print("  4. reindexar_embeddings (assincrona, Celery; requer perfil analista+)")
     print("  5. consultar_job_status")
+    print("  6. exportar_resultado (csv/json/geojson)")
+    print("  7. listar_regioes_disponiveis")
+    print("  8. detectar_anomalias_estatisticas (P1)")
+    print("  9. calcular_taxa_elucidacao (P1)")
+    print(" 10. listar_delegacias_com_alerta (P1)")
+    print(" 11. subscrever_alertas (P1, polling de snapshot noturno)")
 
     if transport == "sse":
         print(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")

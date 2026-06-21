@@ -1,0 +1,12 @@
+# Dependências do cliente de referência LangGraph
+# Isoladas do requirements.txt do servidor MCP — o servidor NÃO depende de LangChain/LangGraph.
+
+langchain>=0.3.0
+langchain-mcp-adapters>=0.1.0
+langgraph>=0.2.0
+langgraph-supervisor>=0.0.4
+python-dotenv>=1.0.0
+
+# Provedor de LLM do cliente (escolha o(s) que for usar):
+# langchain-anthropic>=0.3.0
+# langchain-openai>=0.2.0

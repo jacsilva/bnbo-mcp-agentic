@@ -8,8 +8,12 @@ from celery.result import AsyncResult
 
 from jobs.celery_app import celery_app
 from jobs.tasks import reindexar_embeddings
+from server.security.auditoria import com_auditoria
+from server.security.contexto import get_perfil_atual
+from server.security.perfis import ANALISTA, tem_acesso_minimo
 
 
+@com_auditoria("reindexar_embeddings")
 def reindexar_embeddings_tool(batch_size: int = 100) -> str:
     """
     Dispara, de forma assíncrona, a reindexação dos embeddings de todos os BOs
@@ -25,10 +29,14 @@ def reindexar_embeddings_tool(batch_size: int = 100) -> str:
     Returns:
         str: JSON com o job_id do job assíncrono disparado.
     """
+    if not tem_acesso_minimo(get_perfil_atual(), ANALISTA):
+        return json.dumps({"erro": "Perfil insuficiente para disparar reindexação. Requer analista ou investigador."})
+
     job = reindexar_embeddings.delay(batch_size=batch_size)
     return json.dumps({"job_id": job.id, "status": "disparado"})
 
 
+@com_auditoria("consultar_job_status")
 def consultar_job_status_tool(job_id: str) -> str:
     """
     Consulta o status de um job assíncrono disparado por outra tool

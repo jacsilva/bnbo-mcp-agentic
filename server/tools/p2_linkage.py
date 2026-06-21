@@ -9,8 +9,12 @@ chamar cada tool — devem ser precisas.
 import json
 
 from ml import linkage
+from server.security.auditoria import com_auditoria
+from server.security.contexto import get_perfil_atual
+from server.security.redacao import redigir_lista
 
 
+@com_auditoria("buscar_ocorrencias_similares")
 def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int = 10) -> str:
     """
     Busca Boletins de Ocorrência semanticamente e estruturalmente similares a um
@@ -31,9 +35,11 @@ def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", to
     resultados = linkage.buscar_ocorrencias_similares(
         bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k
     )
+    resultados = redigir_lista(resultados, get_perfil_atual())
     return json.dumps(resultados, ensure_ascii=False, default=str)
 
 
+@com_auditoria("obter_razoes_similaridade")
 def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
     """
     Explica por que dois BOs foram considerados similares, detalhando as
@@ -55,6 +61,7 @@ def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
     return json.dumps(resultado, ensure_ascii=False, default=str)
 
 
+@com_auditoria("agrupar_serie_criminal")
 def agrupar_serie_criminal_tool(
     bo_id: str = "", texto_livre: str = "", top_k: int = 30, eps: float = 0.35, min_samples: int = 2
 ) -> str:
@@ -80,4 +87,8 @@ def agrupar_serie_criminal_tool(
     resultado = linkage.agrupar_serie_criminal(
         bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k, eps=eps, min_samples=min_samples
     )
+    perfil = get_perfil_atual()
+    for cluster in resultado["clusters"]:
+        cluster["membros"] = redigir_lista(cluster["membros"], perfil)
+    resultado["ruido"] = redigir_lista(resultado["ruido"], perfil)
     return json.dumps(resultado, ensure_ascii=False, default=str)
