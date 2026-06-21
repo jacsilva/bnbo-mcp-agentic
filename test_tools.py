@@ -4,6 +4,7 @@ diretamente (sem o transporte MCP), para validar contrato e formato JSON.
 """
 
 import json
+import os
 
 import requests
 
@@ -78,8 +79,13 @@ def test_jobs_async():
     print("\n" + "=" * 70)
     print("TEST 4: reindexar_embeddings_tool + consultar_job_status_tool")
     print("=" * 70)
+    # reindexar_embeddings exige perfil analista+. O perfil NUNCA e parametro de
+    # tool; vem do token (placeholder: env MCP_PERFIL_ATUAL). Aqui simulamos um
+    # token de analista para exercitar o caminho privilegiado.
+    os.environ["MCP_PERFIL_ATUAL"] = "analista"
     disparo = json.loads(reindexar_embeddings_tool(batch_size=50))
     print(f"Job disparado: {disparo}")
+    assert "job_id" in disparo, f"esperado job_id, veio: {disparo}"
     status = json.loads(consultar_job_status_tool(disparo["job_id"]))
     print(f"Status inicial: {status}")
     assert "estado" in status

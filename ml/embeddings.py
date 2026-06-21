@@ -1,7 +1,7 @@
 """
 Motor de embeddings — evolução do FAQEngine (rag_app.py) para o domínio de BOs.
 
-Troca o backend Qdrant/all-MiniLM-L6-v2 por multilingual-e5-large (768d),
+Troca o backend Qdrant/all-MiniLM-L6-v2 por multilingual-e5-large (1024d),
 com os prefixos `query:`/`passage:` exigidos pelo modelo e5 e cache de
 embeddings no Redis (chave = SHA-256 do texto prefixado, TTL 24h).
 """

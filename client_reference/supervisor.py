@@ -16,8 +16,8 @@ import os
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
 from langgraph_supervisor import create_supervisor
 
 load_dotenv()
@@ -32,6 +32,20 @@ P2_TOOL_NAMES = {
     "agrupar_serie_criminal",
 }
 
+# Tools do P1 Observatório (server/tools/p1_observatorio.py).
+P1_TOOL_NAMES = {
+    "detectar_anomalias_estatisticas",
+    "calcular_taxa_elucidacao",
+    "listar_delegacias_com_alerta",
+    "subscrever_alertas",
+}
+
+# Tools do P4 Atlas de Vulnerabilidade (server/tools/p4_atlas.py).
+P4_TOOL_NAMES = {
+    "calcular_indice_vulnerabilidade",
+    "gerar_atlas_vulnerabilidade",
+}
+
 P2_AGENT_PROMPT = (
     "Você é o agente especialista em Linkage Criminal (P2). Use as tools "
     "disponíveis para buscar ocorrências similares, explicar por que dois "
@@ -39,25 +53,45 @@ P2_AGENT_PROMPT = (
     "Responda de forma objetiva, citando bo_id e scores quando relevante."
 )
 
+P1_AGENT_PROMPT = (
+    "Você é o agente especialista no Observatório (P1). Use as tools "
+    "disponíveis para detectar anomalias estatísticas (volume de BOs com "
+    "z-score acima do limiar), calcular a taxa de elucidação, listar "
+    "delegacias com alerta ou subscrever alertas do snapshot noturno. "
+    "Responda de forma objetiva, citando município/delegacia, natureza e "
+    "os valores (z-score, taxa) quando relevante."
+)
+
+P4_AGENT_PROMPT = (
+    "Você é o agente especialista no Atlas de Vulnerabilidade (P4). Use as "
+    "tools disponíveis para calcular o Índice de Vulnerabilidade Criminal "
+    "(IVC) por hexágono H3 ou gerar o atlas em GeoJSON com a classificação "
+    "Jenks. Responda de forma objetiva, citando hex_id, IVC e a classe de "
+    "vulnerabilidade quando relevante."
+)
+
 SUPERVISOR_PROMPT = (
     "Você é o supervisor da plataforma de inteligência em segurança "
-    "pública. Roteie cada pedido do usuário para o sub-agente apropriado. "
-    "Nesta fatia, apenas o agente de Linkage Criminal (P2) está disponível: "
-    "use-o para qualquer pergunta sobre ocorrências similares, vínculos "
-    "entre BOs ou séries criminais. Você nunca executa tools diretamente; "
-    "delegue sempre ao sub-agente."
+    "pública. Roteie cada pedido do usuário para o sub-agente apropriado, "
+    "sem nunca executar tools diretamente — delegue sempre.\n"
+    "- Linkage Criminal (P2): ocorrências similares, vínculos entre BOs, "
+    "séries criminais.\n"
+    "- Observatório (P1): anomalias estatísticas, taxa de elucidação, "
+    "delegacias com alerta, subscrição de alertas.\n"
+    "- Atlas de Vulnerabilidade (P4): Índice de Vulnerabilidade Criminal "
+    "(IVC) por hexágono H3, mapa/atlas em GeoJSON."
 )
 
 
 async def build_supervisor():
     """
-    Conecta ao MCP Server, carrega as tools do P2 e monta o supervisor
-    LangGraph com um único sub-agente (P2 Linkage Criminal).
+    Conecta ao MCP Server, carrega as tools e monta o supervisor LangGraph
+    com um sub-agente por projeto: P2 (Linkage Criminal), P1 (Observatório)
+    e P4 (Atlas de Vulnerabilidade).
 
-    Ao adicionar as tools do P1 (Observatório) e P4 (Atlas) nas próximas
-    fatias, basta filtrar `all_tools` por nome (como feito para o P2) e
-    criar um `create_react_agent` adicional para cada um, passando a lista
-    de agentes para `create_supervisor`.
+    Para adicionar um novo projeto, basta filtrar `all_tools` por nome (como
+    nos conjuntos `P*_TOOL_NAMES`), criar mais um `create_agent` com seu
+    `system_prompt` e incluí-lo na lista passada a `create_supervisor`.
     """
     client = MultiServerMCPClient(
         {
@@ -69,18 +103,34 @@ async def build_supervisor():
     )
     all_tools = await client.get_tools()
     p2_tools = [t for t in all_tools if t.name in P2_TOOL_NAMES]
+    p1_tools = [t for t in all_tools if t.name in P1_TOOL_NAMES]
+    p4_tools = [t for t in all_tools if t.name in P4_TOOL_NAMES]
 
     model = init_chat_model(CLIENT_MODEL)
 
-    p2_agent = create_react_agent(
+    p2_agent = create_agent(
         model,
         tools=p2_tools,
         name="p2_linkage_agent",
-        prompt=P2_AGENT_PROMPT,
+        system_prompt=P2_AGENT_PROMPT,
+    )
+
+    p1_agent = create_agent(
+        model,
+        tools=p1_tools,
+        name="p1_observatorio_agent",
+        system_prompt=P1_AGENT_PROMPT,
+    )
+
+    p4_agent = create_agent(
+        model,
+        tools=p4_tools,
+        name="p4_atlas_agent",
+        system_prompt=P4_AGENT_PROMPT,
     )
 
     supervisor = create_supervisor(
-        agents=[p2_agent],
+        agents=[p2_agent, p1_agent, p4_agent],
         model=model,
         prompt=SUPERVISOR_PROMPT,
     ).compile()

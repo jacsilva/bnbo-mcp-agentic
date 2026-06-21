@@ -149,7 +149,9 @@ def gerar_atlas_geojson(estado: str | None = None, meses: int | None = None, n_c
 
     features = []
     for hexagono in hexagonos:
-        boundary = h3.h3_to_geo_boundary(hexagono["hex_id"], geo_json=True)
+        # h3 v4: cell_to_boundary retorna pares (lat, lng); GeoJSON exige [lng, lat] e anel fechado.
+        boundary = [[lng, lat] for lat, lng in h3.cell_to_boundary(hexagono["hex_id"])]
+        boundary.append(boundary[0])
         features.append({
             "type": "Feature",
             "geometry": {"type": "Polygon", "coordinates": [boundary]},

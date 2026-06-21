@@ -13,13 +13,15 @@ import json
 from data.db import get_connection
 from ml import stats
 from server.security.auditoria import com_auditoria
+from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
 
 
 @com_auditoria("detectar_anomalias_estatisticas")
 @tratar_erros
+@coage_numericos
 def detectar_anomalias_estatisticas_tool(
-    estado: str = "", dominio: str = "", natureza: str = "", limiar_z: float = 2.0
+    estado: str = "", dominio: str = "", natureza: str = "", limiar_z: float | str = 2.0
 ) -> str:
     """
     Detecta meses com volume anômalo de BOs (z-score acima do limiar) por
@@ -69,7 +71,8 @@ def calcular_taxa_elucidacao_tool(estado: str = "", delegacia: str = "", naturez
 
 @com_auditoria("listar_delegacias_com_alerta")
 @tratar_erros
-def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float = 2.0, taxa_elucidacao_max: float = 0.3) -> str:
+@coage_numericos
+def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float | str = 2.0, taxa_elucidacao_max: float | str = 0.3) -> str:
     """
     Tool composta: combina anomalias estatísticas de volume com baixa taxa de
     elucidação para apontar delegacias/regiões que merecem atenção prioritária.
@@ -96,7 +99,8 @@ def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float = 2.0, t
 
 @com_auditoria("subscrever_alertas")
 @tratar_erros
-def subscrever_alertas_tool(estado: str = "", desde_horas: int = 24) -> str:
+@coage_numericos
+def subscrever_alertas_tool(estado: str = "", desde_horas: int | str = 24) -> str:
     """
     Lê os alertas mais recentes computados pelo job noturno de anomalias
     (snapshot em `alerta_observatorio`).

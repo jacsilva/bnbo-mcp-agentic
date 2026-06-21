@@ -9,7 +9,8 @@ psycopg-pool>=3.2.0
 pgvector>=0.2.5
 
 # Geo (H3) - usado a partir da Fatia 4 (Atlas de Vulnerabilidade)
-h3>=3.7.0
+# v4: API renomeada (latlng_to_cell / cell_to_boundary). O codigo usa a API v4.
+h3>=4.0.0
 
 # Cache e jobs assíncronos
 redis>=5.0.0

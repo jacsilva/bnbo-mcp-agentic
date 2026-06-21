@@ -85,7 +85,7 @@ def gerar_bo() -> dict:
         "data_hora": data_hora,
         "lat": lat,
         "lng": lng,
-        "hex_id_res8": h3.geo_to_h3(lat, lng, RESOLUCAO_H3),
+        "hex_id_res8": h3.latlng_to_cell(lat, lng, RESOLUCAO_H3),
         "dominio": DOMINIO_POR_NATUREZA[natureza],
         "natureza": natureza,
         "relato": relato,

@@ -4,6 +4,7 @@ Cliente MCP oficial (STDIO) — harness de teste para as tools do P2 Linkage Cri
 
 import asyncio
 import json
+import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -57,7 +58,9 @@ async def main():
     print("MCP CLIENT (STDIO) - P2 LINKAGE CRIMINAL")
     print("=" * 70)
 
-    server_params = StdioServerParameters(command="python3", args=["mcp_server.py"], env=None)
+    # sys.executable garante o MESMO interpretador do cliente (com o venv), em vez
+    # de um "python3" do PATH que pode nao ter as dependencias instaladas.
+    server_params = StdioServerParameters(command=sys.executable, args=["mcp_server.py"], env=None)
 
     try:
         async with stdio_client(server_params) as (read, write):

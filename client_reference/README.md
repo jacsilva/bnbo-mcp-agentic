@@ -44,18 +44,28 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 
 ## Estrutura
 
-- `supervisor.py` — monta o `MultiServerMCPClient`, filtra as tools do P2,
-  cria o sub-agente `p2_linkage_agent` e o supervisor.
+- `supervisor.py` — monta o `MultiServerMCPClient`, filtra as tools por
+  projeto e cria um sub-agente para cada um (`p2_linkage_agent`,
+  `p1_observatorio_agent`, `p4_atlas_agent`), além do supervisor que os roteia.
 - `run_supervisor.py` — CLI de exemplo.
 
-## Expandindo para P1/P4
+## Agentes disponíveis
 
-Quando as tools de Observatório (P1) e Atlas (P4) forem registradas no
-servidor (Fatias 3 e 4), adicione em `supervisor.py`:
+O supervisor roteia para o sub-agente apropriado conforme o pedido:
 
-1. Um novo conjunto `P1_TOOL_NAMES` / `P4_TOOL_NAMES`.
-2. Um `create_react_agent` por projeto, com seu próprio prompt.
-3. Inclua os novos agentes na lista passada a `create_supervisor`.
+- **Linkage Criminal (P2)** — ocorrências similares, vínculos entre BOs,
+  séries criminais.
+- **Observatório (P1)** — anomalias estatísticas, taxa de elucidação,
+  delegacias com alerta, subscrição de alertas.
+- **Atlas de Vulnerabilidade (P4)** — IVC por hexágono H3, atlas em GeoJSON.
+
+## Adicionando um novo projeto
+
+Para registrar mais um projeto, em `supervisor.py`:
+
+1. Um novo conjunto `P*_TOOL_NAMES` com os nomes das tools.
+2. Um `create_agent` para o projeto, com seu próprio `system_prompt`.
+3. Inclua o novo agente na lista passada a `create_supervisor`.
 
 Trocar a LLM do cliente (`MCP_CLIENT_MODEL`) não exige nenhuma mudança no
 servidor — é a validação central deste padrão de desacoplamento.

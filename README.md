@@ -31,80 +31,96 @@ e agrupamento de séries criminais.
       ┌─────────────────┐  ┌─────────┐
       │ PostgreSQL 16    │  │ Redis 7 │
       │ + pgvector HNSW  │  │ cache + │
-      │ (embeddings 768d)│  │ Celery  │
+      │ (embeddings1024d)│  │ Celery  │
       └─────────────────┘  └─────────┘
 ```
 
 - **Vetorial/relacional:** PostgreSQL 16 + pgvector (HNSW, cosseno).
-- **Embeddings:** `intfloat/multilingual-e5-large` (768d), prefixos
+- **Embeddings:** `intfloat/multilingual-e5-large` (1024d), prefixos
   obrigatórios `query:`/`passage:`, cache no Redis por SHA-256 (TTL 24h).
 - **Jobs assíncronos:** Celery + Redis (ex.: reindexação de embeddings).
 
-## 🚀 Instalação
+## 🚀 Execução — do zero até testar as tools
 
-### Pré-requisitos
+### 1. Pré-requisitos
 
 - Python 3.10+
 - Docker e Docker Compose
 
-### Passo a passo
+### 2. Configuração inicial
 
 ```bash
-cp .env.example .env   # ajuste se necessário
+git clone <seu-repo> && cd bnbo-mcp-agentic
+cp .env.example .env   # ajuste DATABASE_URL/REDIS_URL/EMBED_MODEL_NAME se precisar
+```
 
-# 1. Subir PostgreSQL (pgvector) + Redis
+### 3. Subir infraestrutura (Postgres+pgvector e Redis)
+
+```bash
 docker compose up -d
+docker compose ps   # confirme os dois serviços "healthy"
+```
 
-# 2. Ambiente virtual e dependências
+O schema (`data/schema.sql`) é aplicado automaticamente na criação do
+container Postgres.
+
+### 4. Ambiente Python
+
+```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 3. Popular a base com BOs sintéticos
+### 5. Popular a base com BOs sintéticos
+
+```bash
 python3 -m data.synthetic --n 500
 ```
 
-## 🚀 Como usar
+Gera BOs com embeddings (e5-large), hexágonos H3 e uma fração com inquéritos
+vinculados.
 
-### Servidor
+### 6. Subir o servidor MCP
 
 ```bash
-# STDIO (padrão)
+# STDIO (padrão, para uso com cliente MCP local)
 python3 mcp_server.py
 
-# SSE/HTTP
+# ou SSE/HTTP (necessário para o cliente LangGraph de referência)
 MCP_TRANSPORT=sse python3 mcp_server.py
 ```
 
-### Worker Celery (necessário para `reindexar_embeddings`)
+### 7. Worker e beat do Celery (jobs assíncronos)
+
+Em terminais separados, se for usar `reindexar_embeddings` ou os alertas
+noturnos do Observatório:
 
 ```bash
 celery -A jobs.celery_app worker --loglevel=info
+celery -A jobs.celery_app beat --loglevel=info   # job calcular_alertas_noturnos
 ```
 
-### Celery beat (job noturno do Observatório — `calcular_alertas_noturnos`)
+### 8. Testar
 
 ```bash
-celery -A jobs.celery_app beat --loglevel=info
-```
+# Testes unitários sem dependência de infra (rápidos)
+python3 -m tests.test_security
+python3 -m tests.test_stats
+python3 -m tests.test_atlas
+python3 -m tests.test_erros
 
-### Clientes de teste
-
-```bash
-# Testes diretos da lógica (sem MCP/sem servidor)
+# Testes diretos da lógica de domínio (requer Postgres/Redis rodando)
 python3 test_client.py
 
-# Testes das tools (assume servidor SSE rodando)
+# Testes das tools via MCP (requer servidor SSE rodando)
 python3 test_tools.py
 
 # Cliente MCP oficial via STDIO
 python3 mcp_client.py
-
-# Cliente MCP via SSE/HTTP (requer MCP_TRANSPORT=sse)
-python3 mcp_client_http.py
 ```
 
-### Cliente de referência LangGraph (opcional)
+### 9. (Opcional) Cliente supervisor LangGraph
 
 Supervisor que orquestra as tools do MCP Server usando a LLM do cliente —
 ver [`client_reference/README.md`](client_reference/README.md). Deps
@@ -113,6 +129,7 @@ isoladas; o servidor MCP não depende de LangChain/LangGraph.
 ```bash
 MCP_TRANSPORT=sse python3 mcp_server.py &
 pip install -r client_reference/requirements.txt
+export ANTHROPIC_API_KEY=...   # ou configure outro provider em MCP_CLIENT_MODEL
 python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
 ```
 

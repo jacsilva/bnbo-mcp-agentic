@@ -1,9 +1,11 @@
 -- Schema da Fundação P2 (Fatia 0) — base nacional de Boletins de Ocorrência (BOs)
 --
--- Simplificação assumida nesta fatia: particionamento por RANGE em `ano` apenas
--- (em vez do composto `(estado, ano)` do modelo completo), para manter a criação
--- de partições estática e simples no slice inicial. `estado` fica indexado em
--- vez de particionado. Revisar quando as Fatias 2+ generalizarem a ingestão.
+-- Simplificação assumida nesta fatia: tabela `bo` NÃO particionada. O modelo
+-- completo prevê particionamento por (estado, ano), mas no Postgres a chave de
+-- partição precisa entrar em toda PK/UNIQUE — o que (a) impede uma PK simples por
+-- `id` e (b) força as FKs de `inquerito`/`tco` a referenciar a chave composta.
+-- Para o slice com dados sintéticos isso não traz benefício, então `estado` e o
+-- ano ficam apenas indexados. Revisar quando as Fatias 2+ generalizarem a ingestão.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -14,7 +16,6 @@ CREATE TABLE IF NOT EXISTS bo (
     estado          TEXT NOT NULL,
     municipio       TEXT,
     data_hora       TIMESTAMPTZ NOT NULL,
-    ano             INTEGER NOT NULL GENERATED ALWAYS AS (EXTRACT(YEAR FROM data_hora)::INTEGER) STORED,
     lat             DOUBLE PRECISION,
     lng             DOUBLE PRECISION,
     hex_id_res8     TEXT,
@@ -26,15 +27,13 @@ CREATE TABLE IF NOT EXISTS bo (
     instrumento     TEXT,
     status          TEXT NOT NULL DEFAULT 'registrado',
     inquerito_id    UUID,
-    embedding       vector(768),
+    embedding       vector(1024),
     criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
-) PARTITION BY RANGE (ano);
+);
 
-CREATE TABLE IF NOT EXISTS bo_2023 PARTITION OF bo FOR VALUES FROM (2023) TO (2024);
-CREATE TABLE IF NOT EXISTS bo_2024 PARTITION OF bo FOR VALUES FROM (2024) TO (2025);
-CREATE TABLE IF NOT EXISTS bo_2025 PARTITION OF bo FOR VALUES FROM (2025) TO (2026);
-CREATE TABLE IF NOT EXISTS bo_2026 PARTITION OF bo FOR VALUES FROM (2026) TO (2027);
-CREATE TABLE IF NOT EXISTS bo_default PARTITION OF bo DEFAULT;
+-- Indice por ano (substitui o particionamento por ano deste slice). Imutavel via
+-- AT TIME ZONE 'UTC' para poder ser usado em indice de expressao.
+CREATE INDEX IF NOT EXISTS idx_bo_ano ON bo ((EXTRACT(YEAR FROM (data_hora AT TIME ZONE 'UTC'))::INTEGER));
 
 CREATE INDEX IF NOT EXISTS idx_bo_estado ON bo (estado);
 CREATE INDEX IF NOT EXISTS idx_bo_dominio_data ON bo (dominio, data_hora);
@@ -45,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_bo_embedding_hnsw ON bo
     USING hnsw (embedding vector_cosine_ops)
     WITH (ef_construction = 200);
 
-COMMENT ON COLUMN bo.embedding IS 'Embedding multilingual-e5-large (768d) do relato, prefixo passage: aplicado na ingestão.';
+COMMENT ON COLUMN bo.embedding IS 'Embedding multilingual-e5-large (1024d) do relato, prefixo passage: aplicado na ingestão.';
 
 -- Fundação completa (Fatia 2) ------------------------------------------------
 

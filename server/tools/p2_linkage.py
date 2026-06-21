@@ -12,12 +12,14 @@ from ml import linkage
 from server.security.auditoria import com_auditoria
 from server.security.contexto import get_perfil_atual
 from server.security.redacao import redigir_lista
+from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
 
 
 @com_auditoria("buscar_ocorrencias_similares")
 @tratar_erros
-def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int = 10) -> str:
+@coage_numericos
+def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int | str = 10) -> str:
     """
     Busca Boletins de Ocorrência semanticamente e estruturalmente similares a um
     BO existente (por bo_id) ou a uma descrição livre (texto_livre).
@@ -66,8 +68,9 @@ def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
 
 @com_auditoria("agrupar_serie_criminal")
 @tratar_erros
+@coage_numericos
 def agrupar_serie_criminal_tool(
-    bo_id: str = "", texto_livre: str = "", top_k: int = 30, eps: float = 0.35, min_samples: int = 2
+    bo_id: str = "", texto_livre: str = "", top_k: int | str = 30, eps: float | str = 0.35, min_samples: int | str = 2
 ) -> str:
     """
     Agrupa BOs similares a um caso de referência em possíveis séries
