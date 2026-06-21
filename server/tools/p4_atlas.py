@@ -10,9 +10,11 @@ import json
 
 from ml import atlas
 from server.security.auditoria import com_auditoria
+from server.tools._erros import tratar_erros
 
 
 @com_auditoria("calcular_indice_vulnerabilidade")
+@tratar_erros
 def calcular_indice_vulnerabilidade_tool(estado: str = "", meses: int = 0) -> str:
     """
     Calcula o Índice de Vulnerabilidade Criminal (IVC) por hexágono H3
@@ -36,6 +38,7 @@ def calcular_indice_vulnerabilidade_tool(estado: str = "", meses: int = 0) -> st
 
 
 @com_auditoria("gerar_atlas_vulnerabilidade")
+@tratar_erros
 def gerar_atlas_vulnerabilidade_tool(estado: str = "", meses: int = 0, n_classes: int = 5) -> str:
     """
     Gera o Atlas de Vulnerabilidade como GeoJSON: um polígono hexagonal (H3,

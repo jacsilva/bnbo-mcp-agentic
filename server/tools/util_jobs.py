@@ -11,9 +11,11 @@ from jobs.tasks import reindexar_embeddings
 from server.security.auditoria import com_auditoria
 from server.security.contexto import get_perfil_atual
 from server.security.perfis import ANALISTA, tem_acesso_minimo
+from server.tools._erros import tratar_erros
 
 
 @com_auditoria("reindexar_embeddings")
+@tratar_erros
 def reindexar_embeddings_tool(batch_size: int = 100) -> str:
     """
     Dispara, de forma assíncrona, a reindexação dos embeddings de todos os BOs
@@ -37,6 +39,7 @@ def reindexar_embeddings_tool(batch_size: int = 100) -> str:
 
 
 @com_auditoria("consultar_job_status")
+@tratar_erros
 def consultar_job_status_tool(job_id: str) -> str:
     """
     Consulta o status de um job assíncrono disparado por outra tool

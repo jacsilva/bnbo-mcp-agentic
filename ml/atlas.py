@@ -8,8 +8,6 @@ from typing import Any
 
 import h3
 
-from data.db import get_connection
-
 # Peso por domínio na composição do IVC: crimes contra a pessoa pesam mais
 # que crimes patrimoniais na percepção de vulnerabilidade.
 PESO_DOMINIO = {
@@ -19,6 +17,8 @@ PESO_DOMINIO = {
 
 
 def _agregar_por_hexagono(estado: str | None, meses: int | None) -> list[dict[str, Any]]:
+    from data.db import get_connection
+
     filtros = ["hex_id_res8 IS NOT NULL"]
     params: list[Any] = []
     if estado:

@@ -6,7 +6,17 @@ from typing import Any
 
 import numpy as np
 
-from data.db import get_connection
+
+def _calcular_z_scores(volumes: list[float]) -> list[float] | None:
+    """Z-score de uma série de volumes mensais; None se a série for curta
+    demais (<3 pontos) ou tiver desvio padrão zero (sem variação)."""
+    if len(volumes) < 3:
+        return None
+    array = np.array(volumes, dtype=float)
+    media, desvio = array.mean(), array.std()
+    if desvio == 0:
+        return None
+    return list((array - media) / desvio)
 
 
 def detectar_anomalias_estatisticas(
@@ -29,6 +39,8 @@ def detectar_anomalias_estatisticas(
         filtros.append("natureza = %s")
         params.append(natureza)
     where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+
+    from data.db import get_connection
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -54,13 +66,9 @@ def detectar_anomalias_estatisticas(
 
     alertas = []
     for chave, meses in series.items():
-        volumes = np.array([m["total"] for m in meses], dtype=float)
-        if len(volumes) < 3:
+        z_scores = _calcular_z_scores([m["total"] for m in meses])
+        if z_scores is None:
             continue
-        media, desvio = volumes.mean(), volumes.std()
-        if desvio == 0:
-            continue
-        z_scores = (volumes - media) / desvio
         for mes, z in zip(meses, z_scores):
             if abs(z) >= limiar_z:
                 alertas.append({
@@ -96,6 +104,8 @@ def calcular_taxa_elucidacao(
         filtros.append("b.natureza = %s")
         params.append(natureza)
     where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+
+    from data.db import get_connection
 
     with get_connection() as conn:
         with conn.cursor() as cur:

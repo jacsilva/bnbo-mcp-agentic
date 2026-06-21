@@ -150,6 +150,24 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
   aplicado a toda tool, registrando cliente/perfil/tool/parâmetros/timestamp
   na tabela `audit_log`.
 
+## ✅ Qualidade (Fatia 5)
+
+- **Tratamento de erros transversal** (`server/tools/_erros.py`): decorator
+  `tratar_erros` aplicado a toda tool, convertendo `ValueError` (validação de
+  domínio — ex.: BO não encontrado) e exceções inesperadas em uma resposta
+  JSON `{"erro": "..."}` em vez de propagar e quebrar o transporte MCP.
+  Aplicado como decorator mais interno, com `com_auditoria` por fora — a
+  auditoria do acesso ocorre mesmo quando a tool falha.
+- **Testes unitários sem dependência de infraestrutura**
+  (`tests/test_security.py`, `tests/test_stats.py`, `tests/test_atlas.py`,
+  `tests/test_erros.py`): cobrem redação de PII, perfis, z-score
+  (`ml.stats._calcular_z_scores`), classificação Jenks
+  (`ml.atlas.classificar_jenks`) e o decorator de erros — todos executáveis
+  com `python3 -m tests.<modulo>` sem Postgres/Redis. Para viabilizar esses
+  testes, `ml/atlas.py` e `ml/stats.py` importam `data.db.get_connection` de
+  forma local (dentro das funções que acessam o banco), em vez de no topo do
+  módulo.
+
 ## 📁 Estrutura do projeto
 
 ```

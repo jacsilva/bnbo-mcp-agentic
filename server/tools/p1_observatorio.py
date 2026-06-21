@@ -13,9 +13,11 @@ import json
 from data.db import get_connection
 from ml import stats
 from server.security.auditoria import com_auditoria
+from server.tools._erros import tratar_erros
 
 
 @com_auditoria("detectar_anomalias_estatisticas")
+@tratar_erros
 def detectar_anomalias_estatisticas_tool(
     estado: str = "", dominio: str = "", natureza: str = "", limiar_z: float = 2.0
 ) -> str:
@@ -43,6 +45,7 @@ def detectar_anomalias_estatisticas_tool(
 
 
 @com_auditoria("calcular_taxa_elucidacao")
+@tratar_erros
 def calcular_taxa_elucidacao_tool(estado: str = "", delegacia: str = "", natureza: str = "") -> str:
     """
     Calcula a taxa de elucidação (inquéritos concluídos / total) por
@@ -65,6 +68,7 @@ def calcular_taxa_elucidacao_tool(estado: str = "", delegacia: str = "", naturez
 
 
 @com_auditoria("listar_delegacias_com_alerta")
+@tratar_erros
 def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float = 2.0, taxa_elucidacao_max: float = 0.3) -> str:
     """
     Tool composta: combina anomalias estatísticas de volume com baixa taxa de
@@ -91,6 +95,7 @@ def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float = 2.0, t
 
 
 @com_auditoria("subscrever_alertas")
+@tratar_erros
 def subscrever_alertas_tool(estado: str = "", desde_horas: int = 24) -> str:
     """
     Lê os alertas mais recentes computados pelo job noturno de anomalias

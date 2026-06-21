@@ -8,9 +8,11 @@ import json
 
 from data.db import get_connection
 from server.security.auditoria import com_auditoria
+from server.tools._erros import tratar_erros
 
 
 @com_auditoria("exportar_resultado")
+@tratar_erros
 def exportar_resultado_tool(dados_json: str, formato: str = "json") -> str:
     """
     Converte o resultado JSON de outra tool (ex.: buscar_ocorrencias_similares)
@@ -61,6 +63,7 @@ def exportar_resultado_tool(dados_json: str, formato: str = "json") -> str:
 
 
 @com_auditoria("listar_regioes_disponiveis")
+@tratar_erros
 def listar_regioes_disponiveis_tool() -> str:
     """
     Lista os estados e municípios com Boletins de Ocorrência cadastrados na base.
