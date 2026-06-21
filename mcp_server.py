@@ -31,6 +31,10 @@ from server.tools.p1_observatorio import (
     listar_delegacias_com_alerta_tool,
     subscrever_alertas_tool,
 )
+from server.tools.p4_atlas import (
+    calcular_indice_vulnerabilidade_tool,
+    gerar_atlas_vulnerabilidade_tool,
+)
 
 load_dotenv()
 
@@ -50,6 +54,8 @@ mcp_server.tool(name="detectar_anomalias_estatisticas")(detectar_anomalias_estat
 mcp_server.tool(name="calcular_taxa_elucidacao")(calcular_taxa_elucidacao_tool)
 mcp_server.tool(name="listar_delegacias_com_alerta")(listar_delegacias_com_alerta_tool)
 mcp_server.tool(name="subscrever_alertas")(subscrever_alertas_tool)
+mcp_server.tool(name="calcular_indice_vulnerabilidade")(calcular_indice_vulnerabilidade_tool)
+mcp_server.tool(name="gerar_atlas_vulnerabilidade")(gerar_atlas_vulnerabilidade_tool)
 
 
 if __name__ == "__main__":
@@ -70,6 +76,8 @@ if __name__ == "__main__":
     print("  9. calcular_taxa_elucidacao (P1)")
     print(" 10. listar_delegacias_com_alerta (P1)")
     print(" 11. subscrever_alertas (P1, polling de snapshot noturno)")
+    print(" 12. calcular_indice_vulnerabilidade (P4)")
+    print(" 13. gerar_atlas_vulnerabilidade (P4, GeoJSON por hexágono H3)")
 
     if transport == "sse":
         print(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")

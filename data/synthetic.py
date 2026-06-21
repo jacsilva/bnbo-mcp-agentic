@@ -11,8 +11,12 @@ import random
 import uuid
 from datetime import datetime, timedelta
 
+import h3
+
 from data.db import get_connection
 from ml.embeddings import EmbeddingEngine
+
+RESOLUCAO_H3 = 8
 
 ESTADOS = ["SP", "RJ", "MG", "BA", "RS"]
 
@@ -71,14 +75,17 @@ def gerar_bo() -> dict:
     natureza = random.choice(list(NATUREZAS.keys()))
     relato, instrumento = _gerar_relato(natureza)
     data_hora = datetime.now() - timedelta(days=random.randint(0, 730), hours=random.randint(0, 23))
+    lat = round(random.uniform(lat_min, lat_max), 6)
+    lng = round(random.uniform(lng_min, lng_max), 6)
 
     return {
         "bo_numero": str(uuid.uuid4())[:8].upper(),
         "estado": estado,
         "municipio": f"Municipio-{random.randint(1, 50)}",
         "data_hora": data_hora,
-        "lat": round(random.uniform(lat_min, lat_max), 6),
-        "lng": round(random.uniform(lng_min, lng_max), 6),
+        "lat": lat,
+        "lng": lng,
+        "hex_id_res8": h3.geo_to_h3(lat, lng, RESOLUCAO_H3),
         "dominio": DOMINIO_POR_NATUREZA[natureza],
         "natureza": natureza,
         "relato": relato,
@@ -126,11 +133,11 @@ def popular_base(n: int, batch_size: int = 50) -> None:
                     cur.execute(
                         """
                         INSERT INTO bo (
-                            bo_numero, estado, municipio, data_hora, lat, lng,
+                            bo_numero, estado, municipio, data_hora, lat, lng, hex_id_res8,
                             dominio, natureza, relato, vitima_perfil, autor_perfil,
                             instrumento, status, embedding
                         ) VALUES (%(bo_numero)s, %(estado)s, %(municipio)s, %(data_hora)s,
-                                  %(lat)s, %(lng)s, %(dominio)s, %(natureza)s, %(relato)s,
+                                  %(lat)s, %(lng)s, %(hex_id_res8)s, %(dominio)s, %(natureza)s, %(relato)s,
                                   %(vitima_perfil)s, %(autor_perfil)s, %(instrumento)s,
                                   %(status)s, %(embedding)s)
                         RETURNING id

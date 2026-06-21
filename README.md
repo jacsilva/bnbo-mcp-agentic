@@ -131,6 +131,8 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 | `calcular_taxa_elucidacao` | atômica (P1) | Taxa de inquéritos concluídos por delegacia/estado/natureza |
 | `listar_delegacias_com_alerta` | composta (P1) | Combina anomalias de volume + baixa elucidação numa visão de prioridade |
 | `subscrever_alertas` | transversal (P1) | Lê o snapshot mais recente do job noturno de anomalias (polling, não push) |
+| `calcular_indice_vulnerabilidade` | atômica (P4) | Ranking de hexágonos H3 por Índice de Vulnerabilidade Criminal (IVC) |
+| `gerar_atlas_vulnerabilidade` | composta (P4) | GeoJSON do Atlas: hexágonos H3 com IVC e classe Jenks, prontos para mapa |
 
 ## 🔐 Camada de segurança transversal (Fatia 2)
 
@@ -161,6 +163,7 @@ bnbo-mcp-agentic/
 │   ├── tools/
 │   │   ├── p1_observatorio.py # Tools MCP do P1 (wrappers sobre ml.stats)
 │   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre ml.linkage)
+│   │   ├── p4_atlas.py      # Tools MCP do P4 (wrappers sobre ml.atlas)
 │   │   ├── util_jobs.py     # Tools transversais de jobs assíncronos
 │   │   └── util_dominio.py  # exportar_resultado, listar_regioes_disponiveis
 │   └── security/
@@ -171,7 +174,8 @@ bnbo-mcp-agentic/
 ├── ml/
 │   ├── embeddings.py      # e5-large + prefixos query:/passage: + cache Redis
 │   ├── linkage.py         # Busca vetorial, reranking, explicabilidade, DBSCAN
-│   └── stats.py           # Anomalias estatísticas (z-score) e taxa de elucidação (P1)
+│   ├── stats.py           # Anomalias estatísticas (z-score) e taxa de elucidação (P1)
+│   └── atlas.py           # IVC por hexágono H3, classificação Jenks, GeoJSON (P4)
 ├── jobs/
 │   ├── celery_app.py      # Configuração do Celery (broker/backend Redis) + beat_schedule
 │   └── tasks.py           # Tasks reindexar_embeddings, calcular_alertas_noturnos

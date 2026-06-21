@@ -1,0 +1,353 @@
+diff --git a/README.md b/README.md
+index f5bc01c..8ffbcad 100644
+--- a/README.md
++++ b/README.md
+@@ -131,6 +131,8 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
+ | `calcular_taxa_elucidacao` | atômica (P1) | Taxa de inquéritos concluídos por delegacia/estado/natureza |
+ | `listar_delegacias_com_alerta` | composta (P1) | Combina anomalias de volume + baixa elucidação numa visão de prioridade |
+ | `subscrever_alertas` | transversal (P1) | Lê o snapshot mais recente do job noturno de anomalias (polling, não push) |
++| `calcular_indice_vulnerabilidade` | atômica (P4) | Ranking de hexágonos H3 por Índice de Vulnerabilidade Criminal (IVC) |
++| `gerar_atlas_vulnerabilidade` | composta (P4) | GeoJSON do Atlas: hexágonos H3 com IVC e classe Jenks, prontos para mapa |
+ 
+ ## 🔐 Camada de segurança transversal (Fatia 2)
+ 
+@@ -161,6 +163,7 @@ bnbo-mcp-agentic/
+ │   ├── tools/
+ │   │   ├── p1_observatorio.py # Tools MCP do P1 (wrappers sobre ml.stats)
+ │   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre ml.linkage)
++│   │   ├── p4_atlas.py      # Tools MCP do P4 (wrappers sobre ml.atlas)
+ │   │   ├── util_jobs.py     # Tools transversais de jobs assíncronos
+ │   │   └── util_dominio.py  # exportar_resultado, listar_regioes_disponiveis
+ │   └── security/
+@@ -171,7 +174,8 @@ bnbo-mcp-agentic/
+ ├── ml/
+ │   ├── embeddings.py      # e5-large + prefixos query:/passage: + cache Redis
+ │   ├── linkage.py         # Busca vetorial, reranking, explicabilidade, DBSCAN
+-│   └── stats.py           # Anomalias estatísticas (z-score) e taxa de elucidação (P1)
++│   ├── stats.py           # Anomalias estatísticas (z-score) e taxa de elucidação (P1)
++│   └── atlas.py           # IVC por hexágono H3, classificação Jenks, GeoJSON (P4)
+ ├── jobs/
+ │   ├── celery_app.py      # Configuração do Celery (broker/backend Redis) + beat_schedule
+ │   └── tasks.py           # Tasks reindexar_embeddings, calcular_alertas_noturnos
+diff --git a/data/synthetic.py b/data/synthetic.py
+index 08a4060..b15017a 100644
+--- a/data/synthetic.py
++++ b/data/synthetic.py
+@@ -11,9 +11,13 @@ import random
+ import uuid
+ from datetime import datetime, timedelta
+ 
++import h3
++
+ from data.db import get_connection
+ from ml.embeddings import EmbeddingEngine
+ 
++RESOLUCAO_H3 = 8
++
+ ESTADOS = ["SP", "RJ", "MG", "BA", "RS"]
+ 
+ NATUREZAS = {
+@@ -71,14 +75,17 @@ def gerar_bo() -> dict:
+     natureza = random.choice(list(NATUREZAS.keys()))
+     relato, instrumento = _gerar_relato(natureza)
+     data_hora = datetime.now() - timedelta(days=random.randint(0, 730), hours=random.randint(0, 23))
++    lat = round(random.uniform(lat_min, lat_max), 6)
++    lng = round(random.uniform(lng_min, lng_max), 6)
+ 
+     return {
+         "bo_numero": str(uuid.uuid4())[:8].upper(),
+         "estado": estado,
+         "municipio": f"Municipio-{random.randint(1, 50)}",
+         "data_hora": data_hora,
+-        "lat": round(random.uniform(lat_min, lat_max), 6),
+-        "lng": round(random.uniform(lng_min, lng_max), 6),
++        "lat": lat,
++        "lng": lng,
++        "hex_id_res8": h3.geo_to_h3(lat, lng, RESOLUCAO_H3),
+         "dominio": DOMINIO_POR_NATUREZA[natureza],
+         "natureza": natureza,
+         "relato": relato,
+@@ -126,11 +133,11 @@ def popular_base(n: int, batch_size: int = 50) -> None:
+                     cur.execute(
+                         """
+                         INSERT INTO bo (
+-                            bo_numero, estado, municipio, data_hora, lat, lng,
++                            bo_numero, estado, municipio, data_hora, lat, lng, hex_id_res8,
+                             dominio, natureza, relato, vitima_perfil, autor_perfil,
+                             instrumento, status, embedding
+                         ) VALUES (%(bo_numero)s, %(estado)s, %(municipio)s, %(data_hora)s,
+-                                  %(lat)s, %(lng)s, %(dominio)s, %(natureza)s, %(relato)s,
++                                  %(lat)s, %(lng)s, %(hex_id_res8)s, %(dominio)s, %(natureza)s, %(relato)s,
+                                   %(vitima_perfil)s, %(autor_perfil)s, %(instrumento)s,
+                                   %(status)s, %(embedding)s)
+                         RETURNING id
+diff --git a/mcp_server.py b/mcp_server.py
+index c04c241..8512bb2 100644
+--- a/mcp_server.py
++++ b/mcp_server.py
+@@ -31,6 +31,10 @@ from server.tools.p1_observatorio import (
+     listar_delegacias_com_alerta_tool,
+     subscrever_alertas_tool,
+ )
++from server.tools.p4_atlas import (
++    calcular_indice_vulnerabilidade_tool,
++    gerar_atlas_vulnerabilidade_tool,
++)
+ 
+ load_dotenv()
+ 
+@@ -50,6 +54,8 @@ mcp_server.tool(name="detectar_anomalias_estatisticas")(detectar_anomalias_estat
+ mcp_server.tool(name="calcular_taxa_elucidacao")(calcular_taxa_elucidacao_tool)
+ mcp_server.tool(name="listar_delegacias_com_alerta")(listar_delegacias_com_alerta_tool)
+ mcp_server.tool(name="subscrever_alertas")(subscrever_alertas_tool)
++mcp_server.tool(name="calcular_indice_vulnerabilidade")(calcular_indice_vulnerabilidade_tool)
++mcp_server.tool(name="gerar_atlas_vulnerabilidade")(gerar_atlas_vulnerabilidade_tool)
+ 
+ 
+ if __name__ == "__main__":
+@@ -70,6 +76,8 @@ if __name__ == "__main__":
+     print("  9. calcular_taxa_elucidacao (P1)")
+     print(" 10. listar_delegacias_com_alerta (P1)")
+     print(" 11. subscrever_alertas (P1, polling de snapshot noturno)")
++    print(" 12. calcular_indice_vulnerabilidade (P4)")
++    print(" 13. gerar_atlas_vulnerabilidade (P4, GeoJSON por hexágono H3)")
+ 
+     if transport == "sse":
+         print(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")
+diff --git a/ml/atlas.py b/ml/atlas.py
+new file mode 100644
+index 0000000..286d36c
+--- /dev/null
++++ b/ml/atlas.py
+@@ -0,0 +1,166 @@
++"""
++Atlas de Vulnerabilidade (P4) — agregação por hexágono H3, cálculo do Índice
++de Vulnerabilidade Criminal (IVC) e classificação em faixas (Jenks natural
++breaks), exportável como GeoJSON.
++"""
++
++from typing import Any
++
++import h3
++
++from data.db import get_connection
++
++# Peso por domínio na composição do IVC: crimes contra a pessoa pesam mais
++# que crimes patrimoniais na percepção de vulnerabilidade.
++PESO_DOMINIO = {
++    "pessoa": 2.0,
++    "patrimonio": 1.0,
++}
++
++
++def _agregar_por_hexagono(estado: str | None, meses: int | None) -> list[dict[str, Any]]:
++    filtros = ["hex_id_res8 IS NOT NULL"]
++    params: list[Any] = []
++    if estado:
++        filtros.append("estado = %s")
++        params.append(estado)
++    if meses:
++        filtros.append("data_hora >= now() - (%s || ' months')::interval")
++        params.append(meses)
++    where = f"WHERE {' AND '.join(filtros)}"
++
++    with get_connection() as conn:
++        with conn.cursor() as cur:
++            cur.execute(
++                f"""
++                SELECT hex_id_res8, estado, municipio, dominio, count(*) AS total
++                FROM bo
++                {where}
++                GROUP BY hex_id_res8, estado, municipio, dominio
++                """,
++                params,
++            )
++            cols = [c.name for c in cur.description]
++            return [dict(zip(cols, row)) for row in cur.fetchall()]
++
++
++def calcular_indice_vulnerabilidade(estado: str | None = None, meses: int | None = None) -> list[dict[str, Any]]:
++    """Calcula o IVC por hexágono H3 (resolução 8): soma ponderada de ocorrências
++    por domínio, normalizada pelo hexágono de maior incidência (0 a 1)."""
++    linhas = _agregar_por_hexagono(estado, meses)
++
++    por_hexagono: dict[str, dict[str, Any]] = {}
++    for linha in linhas:
++        hex_id = linha["hex_id_res8"]
++        entrada = por_hexagono.setdefault(hex_id, {
++            "hex_id": hex_id,
++            "estado": linha["estado"],
++            "municipio": linha["municipio"],
++            "total_ocorrencias": 0,
++            "score_bruto": 0.0,
++        })
++        peso = PESO_DOMINIO.get(linha["dominio"], 1.0)
++        entrada["total_ocorrencias"] += linha["total"]
++        entrada["score_bruto"] += linha["total"] * peso
++
++    if not por_hexagono:
++        return []
++
++    maximo = max(e["score_bruto"] for e in por_hexagono.values()) or 1.0
++    resultado = []
++    for entrada in por_hexagono.values():
++        entrada["ivc"] = round(entrada["score_bruto"] / maximo, 4)
++        del entrada["score_bruto"]
++        resultado.append(entrada)
++
++    resultado.sort(key=lambda e: e["ivc"], reverse=True)
++    return resultado
++
++
++def classificar_jenks(valores: list[float], n_classes: int = 5) -> list[float]:
++    """Calcula os pontos de corte (breaks) de Jenks natural breaks para `valores`.
++
++    Retorna uma lista de `n_classes + 1` limites (do mínimo ao máximo) que
++    minimizam a variância intra-classe — algoritmo de Fisher-Jenks clássico.
++    """
++    dados = sorted(valores)
++    n = len(dados)
++    if n == 0:
++        return []
++    n_classes = min(n_classes, n)
++    if n_classes <= 1:
++        return [dados[0], dados[-1]]
++
++    # matriz[i][j] = soma de quadrados dos desvios do melhor agrupamento dos
++    # primeiros i valores em j classes; rastro[i][j] = índice de início da
++    # última classe nessa solução.
++    matriz_variancia = [[float("inf")] * (n_classes + 1) for _ in range(n + 1)]
++    matriz_indice = [[0] * (n_classes + 1) for _ in range(n + 1)]
++    matriz_variancia[0][0] = 0.0
++
++    for i in range(1, n + 1):
++        soma = soma_quadrados = 0.0
++        for j in range(1, i + 1):
++            valor = dados[i - j]
++            soma += valor
++            soma_quadrados += valor * valor
++            variancia = soma_quadrados - (soma * soma) / j
++            k = i - j
++            if k != 0:
++                for classe in range(1, n_classes + 1):
++                    if matriz_variancia[k][classe - 1] != float("inf") and (
++                        matriz_variancia[i][classe] == float("inf")
++                        or matriz_variancia[k][classe - 1] + variancia < matriz_variancia[i][classe]
++                    ):
++                        matriz_variancia[i][classe] = matriz_variancia[k][classe - 1] + variancia
++                        matriz_indice[i][classe] = k
++            elif j == i:
++                if variancia < matriz_variancia[i][1]:
++                    matriz_variancia[i][1] = variancia
++                    matriz_indice[i][1] = 0
++
++    cortes = [0] * (n_classes + 1)
++    cortes[n_classes] = n - 1
++    k = n
++    for classe in range(n_classes, 0, -1):
++        origem = matriz_indice[k][classe]
++        cortes[classe - 1] = origem
++        k = origem
++
++    breaks = [dados[0]] + [dados[c] for c in cortes[1:]]
++    return breaks
++
++
++def _classe_para_valor(valor: float, breaks: list[float]) -> int:
++    for classe in range(len(breaks) - 1, 0, -1):
++        if valor >= breaks[classe - 1]:
++            return classe
++    return 1
++
++
++def gerar_atlas_geojson(estado: str | None = None, meses: int | None = None, n_classes: int = 5) -> dict[str, Any]:
++    """Gera um FeatureCollection GeoJSON com um polígono por hexágono H3,
++    contendo o IVC e a classe Jenks (1=menor vulnerabilidade, n_classes=maior)."""
++    hexagonos = calcular_indice_vulnerabilidade(estado=estado, meses=meses)
++    if not hexagonos:
++        return {"type": "FeatureCollection", "features": []}
++
++    breaks = classificar_jenks([h["ivc"] for h in hexagonos], n_classes=n_classes)
++
++    features = []
++    for hexagono in hexagonos:
++        boundary = h3.h3_to_geo_boundary(hexagono["hex_id"], geo_json=True)
++        features.append({
++            "type": "Feature",
++            "geometry": {"type": "Polygon", "coordinates": [boundary]},
++            "properties": {
++                "hex_id": hexagono["hex_id"],
++                "estado": hexagono["estado"],
++                "municipio": hexagono["municipio"],
++                "total_ocorrencias": hexagono["total_ocorrencias"],
++                "ivc": hexagono["ivc"],
++                "classe_vulnerabilidade": _classe_para_valor(hexagono["ivc"], breaks),
++            },
++        })
++
++    return {"type": "FeatureCollection", "features": features}
+diff --git a/server/tools/p4_atlas.py b/server/tools/p4_atlas.py
+new file mode 100644
+index 0000000..3c8841c
+--- /dev/null
++++ b/server/tools/p4_atlas.py
+@@ -0,0 +1,59 @@
++"""
++Tools MCP do projeto P4 — Atlas de Vulnerabilidade.
++
++Agrega BOs por hexágono H3 (resolução 8) e calcula um Índice de
++Vulnerabilidade Criminal (IVC) ponderado por domínio, classificado em
++faixas via Jenks natural breaks, exportável como GeoJSON para mapas.
++"""
++
++import json
++
++from ml import atlas
++from server.security.auditoria import com_auditoria
++
++
++@com_auditoria("calcular_indice_vulnerabilidade")
++def calcular_indice_vulnerabilidade_tool(estado: str = "", meses: int = 0) -> str:
++    """
++    Calcula o Índice de Vulnerabilidade Criminal (IVC) por hexágono H3
++    (resolução 8), ponderando ocorrências contra a pessoa mais que
++    patrimoniais, normalizado entre 0 e 1 pelo hexágono de maior incidência.
++
++    Use esta tool quando o usuário quiser um ranking de áreas mais
++    vulneráveis, sem precisar de geometria para mapa (use
++    `gerar_atlas_vulnerabilidade_tool` para isso).
++
++    Args:
++        estado (str): Filtra por UF (opcional).
++        meses (int): Considera apenas BOs dos últimos N meses (opcional; 0 = todos).
++
++    Returns:
++        str: JSON com a lista de hexágonos ordenada por IVC decrescente
++             (hex_id, estado, município, total de ocorrências, ivc).
++    """
++    resultado = atlas.calcular_indice_vulnerabilidade(estado=estado or None, meses=meses or None)
++    return json.dumps(resultado, ensure_ascii=False, default=str)
++
++
++@com_auditoria("gerar_atlas_vulnerabilidade")
++def gerar_atlas_vulnerabilidade_tool(estado: str = "", meses: int = 0, n_classes: int = 5) -> str:
++    """
++    Gera o Atlas de Vulnerabilidade como GeoJSON: um polígono hexagonal (H3,
++    resolução 8) por área, com o IVC e a classe Jenks (1=menor
++    vulnerabilidade, n_classes=maior) prontos para plotagem em mapa.
++
++    Use esta tool quando o usuário quiser visualizar a distribuição espacial
++    da vulnerabilidade criminal, em vez de apenas um ranking textual.
++
++    Args:
++        estado (str): Filtra por UF (opcional).
++        meses (int): Considera apenas BOs dos últimos N meses (opcional; 0 = todos).
++        n_classes (int): Número de classes Jenks para a legenda (default 5).
++
++    Returns:
++        str: GeoJSON (FeatureCollection) com um Feature por hexágono, contendo
++             hex_id, estado, município, total_ocorrencias, ivc e
++             classe_vulnerabilidade nas properties.
++    """
++    geojson = atlas.gerar_atlas_geojson(estado=estado or None, meses=meses or None, n_classes=n_classes)
++    return json.dumps(geojson, ensure_ascii=False, default=str)
