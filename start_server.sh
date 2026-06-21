@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Script de inicialização do MCP Agentic RAG Server
+# Script de inicialização do MCP BNBO Server (P2 Linkage Criminal)
 # Uso: ./start_server.sh
 
 echo "============================================================"
-echo "MCP AGENTIC RAG - INICIALIZANDO SERVIDOR"
+echo "MCP BNBO - INICIALIZANDO SERVIDOR"
 echo "============================================================"
 echo ""
 
@@ -22,25 +22,17 @@ else
     pip install -r requirements.txt
 fi
 
-# Verificar se Qdrant está rodando
+# Verificar se PostgreSQL/Redis estão rodando
 echo ""
-echo "Verificando Qdrant..."
-if curl -s http://localhost:6333/ > /dev/null 2>&1; then
-    echo "✓ Qdrant está rodando"
+echo "Verificando PostgreSQL/Redis..."
+if curl -s http://localhost:5432/ > /dev/null 2>&1 || nc -z localhost 5432 2>/dev/null; then
+    echo "✓ PostgreSQL está acessível"
 else
-    echo "✗ Qdrant não está rodando!"
-    echo "  Iniciando Qdrant com Docker..."
+    echo "✗ PostgreSQL não está rodando!"
+    echo "  Iniciando PostgreSQL + Redis com Docker..."
     docker compose up -d
-    echo "  Aguardando Qdrant iniciar..."
+    echo "  Aguardando serviços iniciarem..."
     sleep 5
-fi
-
-# Verificar API key
-echo ""
-if grep -q "your_firecrawl_api_key_here" .env 2>/dev/null; then
-    echo "⚠ AVISO: API key do Firecrawl não configurada!"
-    echo "  Edite o arquivo .env e adicione sua chave"
-    echo "  A busca web não funcionará sem a chave"
 fi
 
 # Iniciar servidor

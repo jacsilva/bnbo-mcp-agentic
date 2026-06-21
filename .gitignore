@@ -33,6 +33,10 @@ ENV/
 # Qdrant Storage
 qdrant_storage/
 
+# PostgreSQL / Redis local data
+postgres_data/
+redis_data/
+
 # IDE
 .vscode/
 .idea/
