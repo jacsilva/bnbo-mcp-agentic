@@ -16,7 +16,7 @@ e agrupamento de séries criminais.
 ┌─────────────┐
 │   Cliente   │  (LLM própria do cliente; opcionalmente supervisor LangGraph)
 └──────┬──────┘
-       │ MCP (STDIO/SSE)
+       │ MCP (STDIO/Streamable HTTP)
        ▼
 ┌─────────────────────────────────────────────┐
 │           MCP Server (sem LLM)               │
@@ -87,8 +87,8 @@ vinculados.
 # STDIO (padrão, para uso com cliente MCP local)
 python3 mcp_server.py
 
-# ou SSE/HTTP (necessário para o cliente LangGraph de referência)
-MCP_TRANSPORT=sse python3 mcp_server.py
+# ou Streamable HTTP (necessário para o cliente LangGraph de referência)
+MCP_TRANSPORT=streamable-http python3 mcp_server.py
 ```
 
 ### 7. Worker e beat do Celery (jobs assíncronos)
@@ -113,7 +113,7 @@ python3 -m tests.test_erros
 # Testes diretos da lógica de domínio (requer Postgres/Redis rodando)
 python3 test_client.py
 
-# Testes das tools via MCP (requer servidor SSE rodando)
+# Testes das tools via MCP (requer servidor Streamable HTTP rodando)
 python3 test_tools.py
 
 # Cliente MCP oficial via STDIO
@@ -127,7 +127,7 @@ ver [`client_reference/README.md`](client_reference/README.md). Deps
 isoladas; o servidor MCP não depende de LangChain/LangGraph.
 
 ```bash
-MCP_TRANSPORT=sse python3 mcp_server.py &
+MCP_TRANSPORT=streamable-http python3 mcp_server.py &
 pip install -r client_reference/requirements.txt
 export ANTHROPIC_API_KEY=...   # ou configure outro provider em MCP_CLIENT_MODEL
 python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
@@ -189,9 +189,9 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 
 ```
 bnbo-mcp-agentic/
-├── mcp_server.py          # Servidor MCP (STDIO/SSE) — registra as tools do domínio
+├── mcp_server.py          # Servidor MCP (STDIO/Streamable HTTP) — registra as tools do domínio
 ├── mcp_client.py          # Cliente MCP oficial (STDIO)
-├── mcp_client_http.py     # Cliente MCP via SSE/HTTP
+├── mcp_client_http.py     # Cliente MCP via Streamable HTTP
 ├── test_client.py         # Testes diretos da lógica (ml.linkage)
 ├── test_tools.py          # Testes das funções *_tool do servidor
 ├── server/

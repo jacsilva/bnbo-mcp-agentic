@@ -86,8 +86,12 @@ if __name__ == "__main__":
     log(" 12. calcular_indice_vulnerabilidade (P4)")
     log(" 13. gerar_atlas_vulnerabilidade (P4, GeoJSON por hexágono H3)")
 
-    if transport == "sse":
-        log(f"\nTransport: SSE (HTTP) em http://{HOST}:{PORT}/sse")
+    # "http" é aceito como alias amigável de "streamable-http" (o nome de
+    # transporte do SDK). SSE foi descontinuado na revisão 2025-03-26 da
+    # especificação MCP em favor do Streamable HTTP.
+    if transport in ("streamable-http", "http"):
+        transport = "streamable-http"
+        log(f"\nTransport: Streamable HTTP em http://{HOST}:{PORT}/mcp")
     else:
         log("\nTransport: STDIO")
 

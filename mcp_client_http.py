@@ -1,12 +1,12 @@
 """
-Cliente MCP via SSE (HTTP) — harness de teste para as tools do P2 Linkage Criminal.
+Cliente MCP via Streamable HTTP — harness de teste para as tools do P2 Linkage Criminal.
 """
 
 import asyncio
 import json
 
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
 
 async def call_tool(session: ClientSession, tool_name: str, arguments: dict):
@@ -55,18 +55,18 @@ async def list_available_tools(session: ClientSession):
 async def main():
     HOST = "127.0.0.1"
     PORT = 8080
-    SERVER_URL = f"http://{HOST}:{PORT}/sse"
+    SERVER_URL = f"http://{HOST}:{PORT}/mcp"
 
     print("\n" + "=" * 70)
     print("MCP HTTP CLIENT - P2 LINKAGE CRIMINAL")
     print("=" * 70)
-    print(f"\nConnecting to MCP server via SSE at {SERVER_URL}...")
+    print(f"\nConnecting to MCP server via Streamable HTTP at {SERVER_URL}...")
 
     try:
-        async with sse_client(SERVER_URL) as (read, write):
+        async with streamablehttp_client(SERVER_URL) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                print("✓ Connected to MCP server via HTTP/SSE!\n")
+                print("✓ Connected to MCP server via Streamable HTTP!\n")
 
                 await list_available_tools(session)
 
@@ -87,9 +87,9 @@ async def main():
         print(f"\n✗ ERROR: Failed to connect to MCP server via HTTP")
         print(f"Details: {e}")
         print("\nMake sure:")
-        print("  1. The MCP server is running with SSE transport")
+        print("  1. The MCP server is running with Streamable HTTP transport")
         print(f"  2. Server is accessible at {SERVER_URL}")
-        print("  3. Run server with: MCP_TRANSPORT=sse python3 mcp_server.py")
+        print("  3. Run server with: MCP_TRANSPORT=streamable-http python3 mcp_server.py")
         print("=" * 70 + "\n")
 
 

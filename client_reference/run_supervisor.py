@@ -2,7 +2,7 @@
 CLI de exemplo para o supervisor LangGraph de referência.
 
 Uso:
-    MCP_TRANSPORT=sse python3 mcp_server.py &
+    MCP_TRANSPORT=streamable-http python3 mcp_server.py &
     python3 client_reference/run_supervisor.py "Busque ocorrências similares a roubo de celular com faca"
 """
 

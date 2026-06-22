@@ -24,14 +24,13 @@ def test_server_health():
     print("TEST 0: MCP SERVER HEALTH CHECK")
     print("=" * 70)
     try:
-        response = requests.get("http://127.0.0.1:8080/sse", timeout=5)
-        if response.status_code == 200:
-            print("\n✓ MCP Server is RUNNING on port 8080")
-        else:
-            print(f"\n⚠ Server responded with status: {response.status_code}")
+        # No Streamable HTTP um GET cru ao /mcp (sem sessão/headers) responde
+        # 4xx, não 200 — qualquer resposta HTTP já indica que o servidor subiu.
+        response = requests.get("http://127.0.0.1:8080/mcp", timeout=5)
+        print(f"\n✓ MCP Server is RUNNING on port 8080 (status {response.status_code})")
     except requests.exceptions.ConnectionError:
         print("\n✗ MCP Server is NOT running")
-        print("  Start it with: MCP_TRANSPORT=sse python3 mcp_server.py")
+        print("  Start it with: MCP_TRANSPORT=streamable-http python3 mcp_server.py")
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
     print("=" * 70)

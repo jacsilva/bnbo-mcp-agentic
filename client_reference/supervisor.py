@@ -6,7 +6,7 @@ raciocínio/roteamento acontece aqui, no cliente, usando a LLM que o cliente
 escolher (model-agnostic via `init_chat_model`). O servidor nunca embarca LLM.
 
 `MultiServerMCPClient` (langchain-mcp-adapters) carrega as tools do MCP
-Server via SSE/HTTP e as converte em `BaseTool` do LangChain. Um supervisor
+Server via Streamable HTTP e as converte em `BaseTool` do LangChain. Um supervisor
 (`langgraph-supervisor`) roteia para um sub-agente por projeto — nesta fatia,
 apenas o sub-agente do P2 (Linkage Criminal). O supervisor só roteia; as
 tools rodam no servidor via MCP.
@@ -22,7 +22,7 @@ from langgraph_supervisor import create_supervisor
 
 load_dotenv()
 
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8080/sse")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8080/mcp")
 CLIENT_MODEL = os.getenv("MCP_CLIENT_MODEL", "anthropic:claude-sonnet-4-6")
 
 # Tools do P2 expostas pelo servidor (server/tools/p2_linkage.py).
@@ -97,7 +97,7 @@ async def build_supervisor():
         {
             "bnbo": {
                 "url": MCP_SERVER_URL,
-                "transport": "sse",
+                "transport": "streamable_http",
             }
         }
     )
