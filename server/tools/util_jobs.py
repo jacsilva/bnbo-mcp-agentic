@@ -8,16 +8,20 @@ from celery.result import AsyncResult
 
 from jobs.celery_app import celery_app
 from jobs.tasks import reindexar_embeddings
+from server.schemas.entrada import ConsultarJobStatusArgs, ReindexarEmbeddingsArgs
+from server.schemas.saida import JobDisparo, JobStatus
 from server.security.auditoria import com_auditoria
 from server.security.contexto import get_perfil_atual
 from server.security.perfis import ANALISTA, tem_acesso_minimo
 from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
+from server.tools._validacao import valida_entrada
 
 
 @com_auditoria("reindexar_embeddings")
 @tratar_erros
 @coage_numericos
+@valida_entrada(ReindexarEmbeddingsArgs)
 def reindexar_embeddings_tool(batch_size: int | str = 100) -> str:
     """
     Dispara, de forma assíncrona, a reindexação dos embeddings de todos os BOs
@@ -37,11 +41,12 @@ def reindexar_embeddings_tool(batch_size: int | str = 100) -> str:
         return json.dumps({"erro": "Perfil insuficiente para disparar reindexação. Requer analista ou investigador."})
 
     job = reindexar_embeddings.delay(batch_size=batch_size)
-    return json.dumps({"job_id": job.id, "status": "disparado"})
+    return JobDisparo(job_id=job.id, status="disparado").model_dump_json()
 
 
 @com_auditoria("consultar_job_status")
 @tratar_erros
+@valida_entrada(ConsultarJobStatusArgs)
 def consultar_job_status_tool(job_id: str) -> str:
     """
     Consulta o status de um job assíncrono disparado por outra tool
@@ -65,4 +70,4 @@ def consultar_job_status_tool(job_id: str) -> str:
         payload["resultado"] = result.result
     elif result.state == "FAILURE":
         payload["erro"] = str(result.info)
-    return json.dumps(payload, ensure_ascii=False, default=str)
+    return JobStatus.model_validate(payload).model_dump_json(exclude_none=True)

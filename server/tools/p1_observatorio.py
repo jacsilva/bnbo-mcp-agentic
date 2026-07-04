@@ -8,18 +8,30 @@ da tabela `alerta_observatorio` (populada pelo job noturno
 `calcular_alertas_noturnos`), funcionando como polling. Ver nota no README.
 """
 
-import json
-
 from data.db import get_connection
-from ml import stats
+from services import stats
+from server.schemas.entrada import (
+    CalcularTaxaElucidacaoArgs,
+    DetectarAnomaliasArgs,
+    ListarDelegaciasAlertaArgs,
+    SubscreverAlertasArgs,
+)
+from server.schemas.saida import (
+    DelegaciasComAlerta,
+    ListaAlertas,
+    ListaAnomalias,
+    ListaTaxasElucidacao,
+)
 from server.security.auditoria import com_auditoria
 from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
+from server.tools._validacao import valida_entrada
 
 
 @com_auditoria("detectar_anomalias_estatisticas")
 @tratar_erros
 @coage_numericos
+@valida_entrada(DetectarAnomaliasArgs)
 def detectar_anomalias_estatisticas_tool(
     estado: str = "", dominio: str = "", natureza: str = "", limiar_z: float | str = 2.0
 ) -> str:
@@ -43,11 +55,12 @@ def detectar_anomalias_estatisticas_tool(
     alertas = stats.detectar_anomalias_estatisticas(
         estado=estado or None, dominio=dominio or None, natureza=natureza or None, limiar_z=limiar_z
     )
-    return json.dumps(alertas, ensure_ascii=False, default=str)
+    return ListaAnomalias.dump_json(ListaAnomalias.validate_python(alertas)).decode()
 
 
 @com_auditoria("calcular_taxa_elucidacao")
 @tratar_erros
+@valida_entrada(CalcularTaxaElucidacaoArgs)
 def calcular_taxa_elucidacao_tool(estado: str = "", delegacia: str = "", natureza: str = "") -> str:
     """
     Calcula a taxa de elucidação (inquéritos concluídos / total) por
@@ -66,12 +79,13 @@ def calcular_taxa_elucidacao_tool(estado: str = "", delegacia: str = "", naturez
              ordenada da menor para a maior taxa.
     """
     resultado = stats.calcular_taxa_elucidacao(estado=estado or None, delegacia=delegacia or None, natureza=natureza or None)
-    return json.dumps(resultado, ensure_ascii=False, default=str)
+    return ListaTaxasElucidacao.dump_json(ListaTaxasElucidacao.validate_python(resultado)).decode()
 
 
 @com_auditoria("listar_delegacias_com_alerta")
 @tratar_erros
 @coage_numericos
+@valida_entrada(ListarDelegaciasAlertaArgs)
 def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float | str = 2.0, taxa_elucidacao_max: float | str = 0.3) -> str:
     """
     Tool composta: combina anomalias estatísticas de volume com baixa taxa de
@@ -94,12 +108,13 @@ def listar_delegacias_com_alerta_tool(estado: str = "", limiar_z: float | str = 
     elucidacao = stats.calcular_taxa_elucidacao(estado=estado or None)
     baixa_elucidacao = [r for r in elucidacao if r["taxa_elucidacao"] <= taxa_elucidacao_max]
     resultado = {"anomalias_volume": anomalias, "delegacias_baixa_elucidacao": baixa_elucidacao}
-    return json.dumps(resultado, ensure_ascii=False, default=str)
+    return DelegaciasComAlerta.model_validate(resultado).model_dump_json()
 
 
 @com_auditoria("subscrever_alertas")
 @tratar_erros
 @coage_numericos
+@valida_entrada(SubscreverAlertasArgs)
 def subscrever_alertas_tool(estado: str = "", desde_horas: int | str = 24) -> str:
     """
     Lê os alertas mais recentes computados pelo job noturno de anomalias
@@ -139,4 +154,4 @@ def subscrever_alertas_tool(estado: str = "", desde_horas: int | str = 24) -> st
             cols = [c.name for c in cur.description]
             alertas = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    return json.dumps(alertas, ensure_ascii=False, default=str)
+    return ListaAlertas.dump_json(ListaAlertas.validate_python(alertas)).decode()

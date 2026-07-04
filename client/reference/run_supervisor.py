@@ -2,19 +2,19 @@
 CLI de exemplo para o supervisor LangGraph de referência.
 
 Uso:
-    MCP_TRANSPORT=streamable-http python3 mcp_server.py &
-    python3 client_reference/run_supervisor.py "Busque ocorrências similares a roubo de celular com faca"
+    MCP_TRANSPORT=streamable-http python3 -m server.mcp_server &
+    python3 -m client.reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
 """
 
 import asyncio
 import sys
 
-from client_reference.supervisor import build_supervisor
+from client.reference.supervisor import build_supervisor
 
 
 async def main():
     if len(sys.argv) < 2:
-        print("Uso: python3 client_reference/run_supervisor.py \"<pergunta>\"")
+        print("Uso: python3 -m client.reference.run_supervisor \"<pergunta>\"")
         sys.exit(1)
 
     query = " ".join(sys.argv[1:])

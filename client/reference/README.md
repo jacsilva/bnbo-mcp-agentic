@@ -15,7 +15,7 @@ sub-agente por projeto → tools via MCP — sem impor qual modelo usar.
 ## Instalação (isolada do servidor)
 
 ```bash
-cd client_reference
+cd client/reference
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -36,10 +36,10 @@ ANTHROPIC_API_KEY=...                          # ou a chave do provedor escolhid
 
 ```bash
 # Terminal 1 — servidor MCP (raiz do projeto)
-MCP_TRANSPORT=streamable-http python3 mcp_server.py
+MCP_TRANSPORT=streamable-http python3 -m server.mcp_server
 
 # Terminal 2 — supervisor
-python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
+python3 -m client.reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
 ```
 
 ## Estrutura

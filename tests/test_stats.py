@@ -1,6 +1,6 @@
-"""Testes unitários de ml.stats — apenas a parte sem dependência de banco."""
+"""Testes unitários de services.stats — apenas a parte sem dependência de banco."""
 
-from ml.stats import _calcular_z_scores
+from services.stats import _calcular_z_scores
 
 
 def test_calcular_z_scores_serie_curta_retorna_none():

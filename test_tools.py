@@ -30,7 +30,7 @@ def test_server_health():
         print(f"\n✓ MCP Server is RUNNING on port 8080 (status {response.status_code})")
     except requests.exceptions.ConnectionError:
         print("\n✗ MCP Server is NOT running")
-        print("  Start it with: MCP_TRANSPORT=streamable-http python3 mcp_server.py")
+        print("  Start it with: MCP_TRANSPORT=streamable-http python3 -m server.mcp_server")
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
     print("=" * 70)

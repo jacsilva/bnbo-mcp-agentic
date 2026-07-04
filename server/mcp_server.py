@@ -36,6 +36,20 @@ from server.tools.p4_atlas import (
     calcular_indice_vulnerabilidade_tool,
     gerar_atlas_vulnerabilidade_tool,
 )
+from server.recursos.dominio import (
+    recurso_glossario,
+    recurso_metodologia_ivc,
+    recurso_perfis,
+    recurso_regioes,
+)
+from server.prompts.templates import (
+    analisar_ocorrencias_similares,
+    mapear_serie_criminal,
+    detectar_anomalias,
+    avaliar_taxa_elucidacao,
+    priorizar_delegacias,
+    gerar_atlas_vulnerabilidade,
+)
 
 load_dotenv()
 
@@ -57,6 +71,28 @@ mcp_server.tool(name="listar_delegacias_com_alerta")(listar_delegacias_com_alert
 mcp_server.tool(name="subscrever_alertas")(subscrever_alertas_tool)
 mcp_server.tool(name="calcular_indice_vulnerabilidade")(calcular_indice_vulnerabilidade_tool)
 mcp_server.tool(name="gerar_atlas_vulnerabilidade")(gerar_atlas_vulnerabilidade_tool)
+
+# Resources — dados de referência read-only do domínio (navegáveis pelo host).
+mcp_server.resource("bnbo://dominio/glossario", name="glossario",
+                    description="Glossário do domínio de segurança pública.",
+                    mime_type="text/markdown")(recurso_glossario)
+mcp_server.resource("bnbo://dominio/metodologia-ivc", name="metodologia_ivc",
+                    description="Metodologia e pesos do IVC.",
+                    mime_type="text/markdown")(recurso_metodologia_ivc)
+mcp_server.resource("bnbo://dominio/perfis", name="perfis",
+                    description="Modelo de perfis de acesso e visibilidade de PII.",
+                    mime_type="application/json")(recurso_perfis)
+mcp_server.resource("bnbo://dominio/regioes", name="regioes",
+                    description="Estados e municípios com BOs cadastrados.",
+                    mime_type="application/json")(recurso_regioes)
+
+# Prompt Templates — atalhos de tarefa invocados pelo usuário (um por tarefa).
+mcp_server.prompt(name="analisar_ocorrencias_similares")(analisar_ocorrencias_similares)
+mcp_server.prompt(name="mapear_serie_criminal")(mapear_serie_criminal)
+mcp_server.prompt(name="detectar_anomalias")(detectar_anomalias)
+mcp_server.prompt(name="avaliar_taxa_elucidacao")(avaliar_taxa_elucidacao)
+mcp_server.prompt(name="priorizar_delegacias")(priorizar_delegacias)
+mcp_server.prompt(name="gerar_atlas_vulnerabilidade")(gerar_atlas_vulnerabilidade)
 
 
 if __name__ == "__main__":
@@ -85,6 +121,20 @@ if __name__ == "__main__":
     log(" 11. subscrever_alertas (P1, polling de snapshot noturno)")
     log(" 12. calcular_indice_vulnerabilidade (P4)")
     log(" 13. gerar_atlas_vulnerabilidade (P4, GeoJSON por hexágono H3)")
+
+    log("\nResources registrados:")
+    log("  - bnbo://dominio/glossario")
+    log("  - bnbo://dominio/metodologia-ivc")
+    log("  - bnbo://dominio/perfis")
+    log("  - bnbo://dominio/regioes")
+
+    log("\nPrompts registrados:")
+    log("  - analisar_ocorrencias_similares")
+    log("  - mapear_serie_criminal")
+    log("  - detectar_anomalias")
+    log("  - avaliar_taxa_elucidacao")
+    log("  - priorizar_delegacias")
+    log("  - gerar_atlas_vulnerabilidade")
 
     # "http" é aceito como alias amigável de "streamable-http" (o nome de
     # transporte do SDK). SSE foi descontinuado na revisão 2025-03-26 da

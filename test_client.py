@@ -1,11 +1,11 @@
 """
-Cliente de teste simples — chama as funções de ml.linkage diretamente
+Cliente de teste simples — chama as funções de services.linkage diretamente
 (sem passar pelo transporte MCP), para validar a lógica do slice P2.
 """
 
 import json
 
-from ml import linkage
+from services import linkage
 
 
 def test_buscar_similares():
@@ -34,7 +34,7 @@ def test_agrupar_serie_criminal():
 
 def main():
     print("\n" + "=" * 70)
-    print("MCP BNBO - TESTE DIRETO (ml.linkage)")
+    print("MCP BNBO - TESTE DIRETO (services.linkage)")
     print("=" * 70)
     print("\nPré-requisito: docker compose up -d e base populada com data/synthetic.py\n")
 

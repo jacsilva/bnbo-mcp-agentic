@@ -1,6 +1,6 @@
-"""Testes unitários de ml.atlas — apenas a parte sem dependência de banco."""
+"""Testes unitários de services.atlas — apenas a parte sem dependência de banco."""
 
-from ml.atlas import classificar_jenks, _classe_para_valor
+from services.atlas import classificar_jenks, _classe_para_valor
 
 
 def test_classificar_jenks_limites():

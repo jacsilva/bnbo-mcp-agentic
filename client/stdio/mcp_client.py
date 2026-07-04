@@ -1,12 +1,13 @@
 """
-Cliente MCP via Streamable HTTP — harness de teste para as tools do P2 Linkage Criminal.
+Cliente MCP oficial (STDIO) — harness de teste para as tools do P2 Linkage Criminal.
 """
 
 import asyncio
 import json
+import sys
 
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 
 async def call_tool(session: ClientSession, tool_name: str, arguments: dict):
@@ -53,20 +54,19 @@ async def list_available_tools(session: ClientSession):
 
 
 async def main():
-    HOST = "127.0.0.1"
-    PORT = 8080
-    SERVER_URL = f"http://{HOST}:{PORT}/mcp"
-
     print("\n" + "=" * 70)
-    print("MCP HTTP CLIENT - P2 LINKAGE CRIMINAL")
+    print("MCP CLIENT (STDIO) - P2 LINKAGE CRIMINAL")
     print("=" * 70)
-    print(f"\nConnecting to MCP server via Streamable HTTP at {SERVER_URL}...")
+
+    # sys.executable garante o MESMO interpretador do cliente (com o venv), em vez
+    # de um "python3" do PATH que pode nao ter as dependencias instaladas.
+    server_params = StdioServerParameters(command=sys.executable, args=["-m", "server.mcp_server"], env=None)
 
     try:
-        async with streamablehttp_client(SERVER_URL) as (read, write, _):
+        async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                print("✓ Connected to MCP server via Streamable HTTP!\n")
+                print("✓ Connected to MCP server!\n")
 
                 await list_available_tools(session)
 
@@ -76,20 +76,20 @@ async def main():
                     "top_k": 5,
                 })
 
-                print("\n\n### TEST 2: Disparar reindexação assíncrona ###")
-                await call_tool(session, "reindexar_embeddings", {"batch_size": 50})
+                print("\n\n### TEST 2: Agrupar série criminal por texto livre ###")
+                await call_tool(session, "agrupar_serie_criminal", {
+                    "texto_livre": "furto de bicicleta em via pública",
+                    "top_k": 20,
+                })
 
                 print("\n\n" + "=" * 70)
                 print("ALL TESTS COMPLETED")
                 print("=" * 70 + "\n")
 
     except Exception as e:
-        print(f"\n✗ ERROR: Failed to connect to MCP server via HTTP")
+        print(f"\n✗ ERROR: Failed to connect to MCP server")
         print(f"Details: {e}")
-        print("\nMake sure:")
-        print("  1. The MCP server is running with Streamable HTTP transport")
-        print(f"  2. Server is accessible at {SERVER_URL}")
-        print("  3. Run server with: MCP_TRANSPORT=streamable-http python3 mcp_server.py")
+        print("\nMake sure: docker compose up -d (postgres+redis) e a base populada.")
         print("=" * 70 + "\n")
 
 

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 import h3
 
 from data.db import get_connection
-from ml.embeddings import EmbeddingEngine
+from services.embeddings import EmbeddingEngine
 
 RESOLUCAO_H3 = 8
 

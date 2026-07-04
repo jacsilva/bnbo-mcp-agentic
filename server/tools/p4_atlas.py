@@ -6,17 +6,22 @@ Vulnerabilidade Criminal (IVC) ponderado por domínio, classificado em
 faixas via Jenks natural breaks, exportável como GeoJSON para mapas.
 """
 
-import json
-
-from ml import atlas
+from services import atlas
+from server.schemas.entrada import (
+    CalcularIndiceVulnerabilidadeArgs,
+    GerarAtlasVulnerabilidadeArgs,
+)
+from server.schemas.saida import AtlasGeoJSON, ListaHexagonos
 from server.security.auditoria import com_auditoria
 from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
+from server.tools._validacao import valida_entrada
 
 
 @com_auditoria("calcular_indice_vulnerabilidade")
 @tratar_erros
 @coage_numericos
+@valida_entrada(CalcularIndiceVulnerabilidadeArgs)
 def calcular_indice_vulnerabilidade_tool(estado: str = "", meses: int | str = 0) -> str:
     """
     Calcula o Índice de Vulnerabilidade Criminal (IVC) por hexágono H3
@@ -36,12 +41,13 @@ def calcular_indice_vulnerabilidade_tool(estado: str = "", meses: int | str = 0)
              (hex_id, estado, município, total de ocorrências, ivc).
     """
     resultado = atlas.calcular_indice_vulnerabilidade(estado=estado or None, meses=meses or None)
-    return json.dumps(resultado, ensure_ascii=False, default=str)
+    return ListaHexagonos.dump_json(ListaHexagonos.validate_python(resultado)).decode()
 
 
 @com_auditoria("gerar_atlas_vulnerabilidade")
 @tratar_erros
 @coage_numericos
+@valida_entrada(GerarAtlasVulnerabilidadeArgs)
 def gerar_atlas_vulnerabilidade_tool(estado: str = "", meses: int | str = 0, n_classes: int | str = 5) -> str:
     """
     Gera o Atlas de Vulnerabilidade como GeoJSON: um polígono hexagonal (H3,
@@ -62,4 +68,4 @@ def gerar_atlas_vulnerabilidade_tool(estado: str = "", meses: int | str = 0, n_c
              classe_vulnerabilidade nas properties.
     """
     geojson = atlas.gerar_atlas_geojson(estado=estado or None, meses=meses or None, n_classes=n_classes)
-    return json.dumps(geojson, ensure_ascii=False, default=str)
+    return AtlasGeoJSON.model_validate(geojson).model_dump_json()

@@ -1,24 +1,34 @@
 """
 Tools MCP do projeto P2 — Linkage Criminal.
 
-Cada tool é registrada no `mcp_server` em `mcp_server.py`. As descriptions
+Cada tool é registrada no `mcp_server` em `server/mcp_server.py`. As descriptions
 abaixo são o contrato lido pela LLM do cliente para decidir quando/como
 chamar cada tool — devem ser precisas.
 """
 
-import json
-
-from ml import linkage
+from services import linkage
+from server.schemas.entrada import (
+    AgruparSerieCriminalArgs,
+    BuscarOcorrenciasSimilaresArgs,
+    ObterRazoesSimilaridadeArgs,
+)
+from server.schemas.saida import (
+    ListaOcorrenciasSimilares,
+    RazaoSimilaridade,
+    SerieCriminal,
+)
 from server.security.auditoria import com_auditoria
 from server.security.contexto import get_perfil_atual
 from server.security.redacao import redigir_lista
 from server.tools._coercao import coage_numericos
 from server.tools._erros import tratar_erros
+from server.tools._validacao import valida_entrada
 
 
 @com_auditoria("buscar_ocorrencias_similares")
 @tratar_erros
 @coage_numericos
+@valida_entrada(BuscarOcorrenciasSimilaresArgs)
 def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", top_k: int | str = 10) -> str:
     """
     Busca Boletins de Ocorrência semanticamente e estruturalmente similares a um
@@ -40,11 +50,14 @@ def buscar_ocorrencias_similares_tool(bo_id: str = "", texto_livre: str = "", to
         bo_id=bo_id or None, texto_livre=texto_livre or None, top_k=top_k
     )
     resultados = redigir_lista(resultados, get_perfil_atual())
-    return json.dumps(resultados, ensure_ascii=False, default=str)
+    return ListaOcorrenciasSimilares.dump_json(
+        ListaOcorrenciasSimilares.validate_python(resultados)
+    ).decode()
 
 
 @com_auditoria("obter_razoes_similaridade")
 @tratar_erros
+@valida_entrada(ObterRazoesSimilaridadeArgs)
 def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
     """
     Explica por que dois BOs foram considerados similares, detalhando as
@@ -63,12 +76,13 @@ def obter_razoes_similaridade_tool(bo_id_a: str, bo_id_b: str) -> str:
              ponderadas de cada dimensão e o score final agregado.
     """
     resultado = linkage.obter_razoes_similaridade(bo_id_a, bo_id_b)
-    return json.dumps(resultado, ensure_ascii=False, default=str)
+    return RazaoSimilaridade.model_validate(resultado).model_dump_json()
 
 
 @com_auditoria("agrupar_serie_criminal")
 @tratar_erros
 @coage_numericos
+@valida_entrada(AgruparSerieCriminalArgs)
 def agrupar_serie_criminal_tool(
     bo_id: str = "", texto_livre: str = "", top_k: int | str = 30, eps: float | str = 0.35, min_samples: int | str = 2
 ) -> str:
@@ -98,4 +112,4 @@ def agrupar_serie_criminal_tool(
     for cluster in resultado["clusters"]:
         cluster["membros"] = redigir_lista(cluster["membros"], perfil)
     resultado["ruido"] = redigir_lista(resultado["ruido"], perfil)
-    return json.dumps(resultado, ensure_ascii=False, default=str)
+    return SerieCriminal.model_validate(resultado).model_dump_json()

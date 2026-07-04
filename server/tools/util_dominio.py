@@ -6,13 +6,17 @@ import csv
 import io
 import json
 
-from data.db import get_connection
+from server.recursos.dominio import consultar_regioes
+from server.schemas.entrada import ExportarResultadoArgs
+from server.schemas.saida import RegioesDisponiveis
 from server.security.auditoria import com_auditoria
 from server.tools._erros import tratar_erros
+from server.tools._validacao import valida_entrada
 
 
 @com_auditoria("exportar_resultado")
 @tratar_erros
+@valida_entrada(ExportarResultadoArgs)
 def exportar_resultado_tool(dados_json: str, formato: str = "json") -> str:
     """
     Converte o resultado JSON de outra tool (ex.: buscar_ocorrencias_similares)
@@ -59,7 +63,8 @@ def exportar_resultado_tool(dados_json: str, formato: str = "json") -> str:
             })
         return json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, default=str)
 
-    raise ValueError(f"Formato não suportado: {formato}. Use csv, json ou geojson.")
+    # `formato` é validado como Literal["csv", "json", "geojson"] em
+    # ExportarResultadoArgs, então os três ramos acima cobrem todos os casos.
 
 
 @com_auditoria("listar_regioes_disponiveis")
@@ -75,15 +80,4 @@ def listar_regioes_disponiveis_tool() -> str:
         str: JSON com a lista de estados e, para cada um, os municípios
              disponíveis.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT estado, municipio FROM bo ORDER BY estado, municipio")
-            rows = cur.fetchall()
-
-    regioes: dict[str, list[str]] = {}
-    for estado, municipio in rows:
-        regioes.setdefault(estado, [])
-        if municipio:
-            regioes[estado].append(municipio)
-
-    return json.dumps(regioes, ensure_ascii=False)
+    return RegioesDisponiveis.dump_json(RegioesDisponiveis.validate_python(consultar_regioes())).decode()

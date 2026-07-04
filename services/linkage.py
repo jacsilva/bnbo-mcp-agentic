@@ -7,7 +7,7 @@ import math
 from typing import Any
 
 from data.db import get_connection
-from ml.embeddings import EmbeddingEngine
+from services.embeddings import EmbeddingEngine
 
 PESOS_RERANK = {
     "semantico": 0.5,

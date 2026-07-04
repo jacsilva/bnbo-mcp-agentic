@@ -19,7 +19,7 @@ O código já foi atualizado para usar `sentence-transformers/all-MiniLM-L6-v2` 
 Basta reiniciar o servidor:
 ```bash
 # Pare o servidor atual (Ctrl+C)
-python3 mcp_server.py
+python3 -m server.mcp_server
 ```
 
 #### Solução 2: Aumentar timeout manualmente
@@ -55,7 +55,7 @@ ls -la ~/.cache/huggingface/hub/
 ```bash
 export HTTP_PROXY=http://seu-proxy:porta
 export HTTPS_PROXY=http://seu-proxy:porta
-python3 mcp_server.py
+python3 -m server.mcp_server
 ```
 
 ---
@@ -70,7 +70,7 @@ lsof -i :8080
 # Mate o processo
 kill -9 <PID>
 
-# Ou use outra porta editando mcp_server.py:
+# Ou use outra porta editando server/mcp_server.py:
 PORT = 8081  # Mude para porta diferente
 ```
 
@@ -100,7 +100,7 @@ curl http://localhost:6333/collections
 ### Solução
 O código já foi corrigido. Se ainda tiver erro:
 ```python
-# Adicione no topo de mcp_server.py:
+# Adicione no topo de server/mcp_server.py:
 import subprocess
 ```
 
@@ -149,7 +149,7 @@ echo "=== Fim da Verificação ==="
 
 ### Ver logs do servidor MCP
 ```bash
-python3 mcp_server.py 2>&1 | tee mcp_server.log
+python3 -m server.mcp_server 2>&1 | tee mcp_server.log
 ```
 
 ### Ver logs do Qdrant
@@ -183,7 +183,7 @@ Se continuar com problemas, tente estes modelos (do menor para o maior):
 | `sentence-transformers/all-mpnet-base-v2` | 420MB | 768 | ⚡⚡ | ⭐⭐⭐⭐ |
 | `nomic-ai/nomic-embed-text-v1.5` | 500MB | 768 | ⚡ | ⭐⭐⭐⭐⭐ |
 
-Para mudar o modelo, edite em `mcp_server.py`:
+Para mudar o modelo, edite em `server/mcp_server.py`:
 ```python
 faq_engine = FAQEngine(
     qdrant_url=QDRANT_URL, 

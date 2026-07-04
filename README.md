@@ -85,10 +85,10 @@ vinculados.
 
 ```bash
 # STDIO (padrão, para uso com cliente MCP local)
-python3 mcp_server.py
+python3 -m server.mcp_server
 
 # ou Streamable HTTP (necessário para o cliente LangGraph de referência)
-MCP_TRANSPORT=streamable-http python3 mcp_server.py
+MCP_TRANSPORT=streamable-http python3 -m server.mcp_server
 ```
 
 ### 7. Worker e beat do Celery (jobs assíncronos)
@@ -117,20 +117,43 @@ python3 test_client.py
 python3 test_tools.py
 
 # Cliente MCP oficial via STDIO
-python3 mcp_client.py
+python3 -m client.stdio.mcp_client
+
+# Cliente MCP via Streamable HTTP (requer servidor Streamable HTTP rodando)
+python3 -m client.http.mcp_client_http
+```
+
+#### Inspecionar via MCP Inspector (UI web)
+
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) é a UI
+oficial para navegar e testar Tools/Resources/Prompts do servidor. Roda via
+`npx` (requer Node 18+) e abre em `http://localhost:6274` com um token de
+sessão na URL.
+
+```bash
+# A) STDIO — o Inspector sobe e gerencia o servidor.
+#    Use o python do venv (senão faltam mcp e as demais deps).
+npx @modelcontextprotocol/inspector venv/bin/python3 -m server.mcp_server
+
+# B) Streamable HTTP — conecta num servidor já no ar.
+#    Suba o servidor antes (MCP_TRANSPORT=streamable-http python3 -m server.mcp_server),
+#    depois abra o Inspector e configure na UI:
+#      Transport Type: Streamable HTTP
+#      URL:            http://127.0.0.1:8080/mcp
+npx @modelcontextprotocol/inspector
 ```
 
 ### 9. (Opcional) Cliente supervisor LangGraph
 
 Supervisor que orquestra as tools do MCP Server usando a LLM do cliente —
-ver [`client_reference/README.md`](client_reference/README.md). Deps
+ver [`client/reference/README.md`](client/reference/README.md). Deps
 isoladas; o servidor MCP não depende de LangChain/LangGraph.
 
 ```bash
-MCP_TRANSPORT=streamable-http python3 mcp_server.py &
-pip install -r client_reference/requirements.txt
+MCP_TRANSPORT=streamable-http python3 -m server.mcp_server &
+pip install -r client/reference/requirements.txt
 export ANTHROPIC_API_KEY=...   # ou configure outro provider em MCP_CLIENT_MODEL
-python3 -m client_reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
+python3 -m client.reference.run_supervisor "Busque ocorrências similares a roubo de celular com faca"
 ```
 
 ## 🛠️ Tools expostas
@@ -151,6 +174,37 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 | `calcular_indice_vulnerabilidade` | atômica (P4) | Ranking de hexágonos H3 por Índice de Vulnerabilidade Criminal (IVC) |
 | `gerar_atlas_vulnerabilidade` | composta (P4) | GeoJSON do Atlas: hexágonos H3 com IVC e classe Jenks, prontos para mapa |
 
+## 📚 Resources expostos
+
+Dados de referência read-only do domínio (navegáveis pelo host/cliente como
+contexto, complementares às tools). Definidos em `server/recursos/`.
+
+| URI | Tipo | Conteúdo |
+|---|---|---|
+| `bnbo://dominio/glossario` | markdown | Glossário do domínio (BO, inquérito, TCO, H3, IVC, série criminal…) |
+| `bnbo://dominio/metodologia-ivc` | markdown | Metodologia e pesos do IVC (ponderação por domínio, H3 res. 8, Jenks) |
+| `bnbo://dominio/perfis` | JSON | Hierarquia de perfis e visibilidade de PII por perfil |
+| `bnbo://dominio/regioes` | JSON | Estados/municípios com BOs cadastrados |
+
+> `regioes` existe como **tool** (`listar_regioes_disponiveis`, invocada pelo
+> modelo) **e** como **resource** (navegável pelo host); ambos compartilham a
+> mesma leitura (`server/recursos/dominio.consultar_regioes`).
+
+## 💬 Prompt Templates expostos
+
+Atalhos de tarefa invocados pelo usuário (um por tarefa-chave), que orientam o
+modelo a chamar a tool certa com os limites de parâmetro e cuidados de PII.
+Definidos em `server/prompts/templates.py`.
+
+| Prompt | Argumentos | Tool-alvo |
+|---|---|---|
+| `analisar_ocorrencias_similares` | `bo_id`/`texto_livre`, `top_k` | `buscar_ocorrencias_similares` (+ razões) |
+| `mapear_serie_criminal` | `bo_id`/`texto_livre` | `agrupar_serie_criminal` |
+| `detectar_anomalias` | `estado`, `dominio`, `natureza` | `detectar_anomalias_estatisticas` |
+| `avaliar_taxa_elucidacao` | `estado`, `delegacia` | `calcular_taxa_elucidacao` |
+| `priorizar_delegacias` | `estado` | `listar_delegacias_com_alerta` |
+| `gerar_atlas_vulnerabilidade` | `estado`, `meses` | `calcular_indice_vulnerabilidade` / `gerar_atlas_vulnerabilidade` |
+
 ## 🔐 Camada de segurança transversal (Fatia 2)
 
 - **Perfis** (`server/security/perfis.py`): `publico < analista < investigador`.
@@ -169,19 +223,32 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 
 ## ✅ Qualidade (Fatia 5)
 
+- **Contrato de validação Pydantic** (`server/schemas/`): cada tool tem um
+  modelo de **entrada** (`entrada.py`) com as restrições de domínio declaradas
+  (faixas numéricas via `Field(ge=…, le=…)`, valores permitidos via `Literal`,
+  campos obrigatórios, exigência de `bo_id` OU `texto_livre`) e um modelo de
+  **saída** (`saida.py`) que valida e serializa o retorno. A entrada é validada
+  pelo decorator `valida_entrada` (`server/tools/_validacao.py`), o mais interno
+  da pilha, logo após `coage_numericos` — assim a *assinatura* das tools segue
+  aceitando `int | str`/`float | str` (tolerância a número serializado como
+  string por LLMs cliente, ver `_coercao.py`) e a faixa é validada depois da
+  coerção. A saída é serializada via `model_dump_json()`/`TypeAdapter`, em vez
+  de `json.dumps` cru, garantindo que o formato entregue bate com o contrato.
 - **Tratamento de erros transversal** (`server/tools/_erros.py`): decorator
-  `tratar_erros` aplicado a toda tool, convertendo `ValueError` (validação de
-  domínio — ex.: BO não encontrado) e exceções inesperadas em uma resposta
-  JSON `{"erro": "..."}` em vez de propagar e quebrar o transporte MCP.
-  Aplicado como decorator mais interno, com `com_auditoria` por fora — a
-  auditoria do acesso ocorre mesmo quando a tool falha.
+  `tratar_erros` aplicado a toda tool, convertendo `pydantic.ValidationError`
+  (contrato de entrada) e `ValueError` (validação de domínio — ex.: BO não
+  encontrado) e exceções inesperadas em uma resposta JSON `{"erro": "..."}` em
+  vez de propagar e quebrar o transporte MCP. Aplicado como decorator externo a
+  `valida_entrada`, com `com_auditoria` por fora — a auditoria do acesso ocorre
+  mesmo quando a tool falha.
 - **Testes unitários sem dependência de infraestrutura**
   (`tests/test_security.py`, `tests/test_stats.py`, `tests/test_atlas.py`,
-  `tests/test_erros.py`): cobrem redação de PII, perfis, z-score
-  (`ml.stats._calcular_z_scores`), classificação Jenks
-  (`ml.atlas.classificar_jenks`) e o decorator de erros — todos executáveis
+  `tests/test_erros.py`, `tests/test_validacao.py`): cobrem redação de PII,
+  perfis, z-score (`services.stats._calcular_z_scores`), classificação Jenks
+  (`services.atlas.classificar_jenks`), o decorator de erros e o contrato de
+  validação Pydantic (entrada/saída) — todos executáveis
   com `python3 -m tests.<modulo>` sem Postgres/Redis. Para viabilizar esses
-  testes, `ml/atlas.py` e `ml/stats.py` importam `data.db.get_connection` de
+  testes, `services/atlas.py` e `services/stats.py` importam `data.db.get_connection` de
   forma local (dentro das funções que acessam o banco), em vez de no topo do
   módulo.
 
@@ -189,18 +256,27 @@ python3 -m client_reference.run_supervisor "Busque ocorrências similares a roub
 
 ```
 bnbo-mcp-agentic/
-├── mcp_server.py          # Servidor MCP (STDIO/Streamable HTTP) — registra as tools do domínio
-├── mcp_client.py          # Cliente MCP oficial (STDIO)
-├── mcp_client_http.py     # Cliente MCP via Streamable HTTP
-├── test_client.py         # Testes diretos da lógica (ml.linkage)
+├── test_client.py         # Testes diretos da lógica (services.linkage)
 ├── test_tools.py          # Testes das funções *_tool do servidor
-├── server/
+├── server/                # === FUNÇÃO SERVIDOR ===
+│   ├── mcp_server.py      # Servidor MCP (STDIO/Streamable HTTP) — registra as tools do domínio
 │   ├── tools/
-│   │   ├── p1_observatorio.py # Tools MCP do P1 (wrappers sobre ml.stats)
-│   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre ml.linkage)
-│   │   ├── p4_atlas.py      # Tools MCP do P4 (wrappers sobre ml.atlas)
+│   │   ├── p1_observatorio.py # Tools MCP do P1 (wrappers sobre services.stats)
+│   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre services.linkage)
+│   │   ├── p4_atlas.py      # Tools MCP do P4 (wrappers sobre services.atlas)
 │   │   ├── util_jobs.py     # Tools transversais de jobs assíncronos
-│   │   └── util_dominio.py  # exportar_resultado, listar_regioes_disponiveis
+│   │   ├── util_dominio.py  # exportar_resultado, listar_regioes_disponiveis
+│   │   ├── _coercao.py      # Coerção numérica (tolera número como string)
+│   │   ├── _validacao.py    # Decorator valida_entrada (contrato Pydantic)
+│   │   └── _erros.py        # Decorator tratar_erros (ValidationError/ValueError → JSON)
+│   ├── schemas/
+│   │   ├── entrada.py       # Modelos Pydantic de argumentos das tools
+│   │   └── saida.py         # Modelos Pydantic de resposta das tools
+│   ├── recursos/
+│   │   ├── dominio.py       # Provedores dos Resources (glossário/IVC/perfis/regiões)
+│   │   └── conteudo/        # Markdown estático (glossario.md, metodologia_ivc.md)
+│   ├── prompts/
+│   │   └── templates.py     # Prompt Templates por tarefa
 │   └── security/
 │       ├── perfis.py        # Perfis publico/analista/investigador
 │       ├── contexto.py       # Resolução do perfil a partir do token (placeholder)
@@ -218,10 +294,15 @@ bnbo-mcp-agentic/
 │   ├── db.py               # Pool de conexões PostgreSQL/pgvector
 │   ├── schema.sql           # Tabelas bo/inquerito/tco/audit_log, índice HNSW
 │   └── synthetic.py          # Gerador de BOs sintéticos para dev/teste
-├── client_reference/       # OPCIONAL: supervisor LangGraph (deps isoladas), usa a LLM do cliente
-│   ├── supervisor.py
-│   ├── run_supervisor.py
-│   └── requirements.txt
+├── client/                 # === FUNÇÃO CLIENTE ===
+│   ├── stdio/
+│   │   └── mcp_client.py    # Cliente MCP oficial (STDIO)
+│   ├── http/
+│   │   └── mcp_client_http.py # Cliente MCP via Streamable HTTP
+│   └── reference/           # OPCIONAL: supervisor LangGraph (deps isoladas), usa a LLM do cliente
+│       ├── supervisor.py
+│       ├── run_supervisor.py
+│       └── requirements.txt
 ├── docker-compose.yml      # PostgreSQL 16 (pgvector) + Redis 7
 ├── requirements.txt
 └── start_server.sh

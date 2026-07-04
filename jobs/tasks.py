@@ -2,8 +2,8 @@
 
 from jobs.celery_app import celery_app
 from data.db import get_connection
-from ml import stats
-from ml.embeddings import EmbeddingEngine
+from services import stats
+from services.embeddings import EmbeddingEngine
 
 
 @celery_app.task(bind=True, name="jobs.reindexar_embeddings")

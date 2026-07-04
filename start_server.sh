@@ -42,4 +42,4 @@ echo "INICIANDO SERVIDOR MCP..."
 echo "============================================================"
 echo ""
 
-python3 mcp_server.py
+python3 -m server.mcp_server
