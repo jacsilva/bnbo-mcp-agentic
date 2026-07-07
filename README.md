@@ -6,9 +6,14 @@ cliente. O servidor é puro: nenhuma LLM roda nele — apenas tools (busca
 vetorial, linkage, jobs assíncronos). Raciocínio e roteamento ficam do lado
 do cliente.
 
-Esta fatia da implementação entrega o **P2 — Linkage Criminal**: busca de
-ocorrências similares (semântica + estrutural), explicabilidade dos vínculos
-e agrupamento de séries criminais.
+A implementação cobre três projetos de inteligência criminal:
+
+- **P1 — Observatório:** anomalias estatísticas de volume (z-score), taxa de
+  elucidação e priorização de delegacias com alerta.
+- **P2 — Linkage Criminal:** busca de ocorrências similares (semântica +
+  estrutural), explicabilidade dos vínculos e agrupamento de séries criminais.
+- **P4 — Atlas de Vulnerabilidade:** Índice de Vulnerabilidade Criminal (IVC)
+  por hexágono H3, com classificação Jenks e saída GeoJSON.
 
 ## 🏗️ Arquitetura
 
@@ -205,11 +210,11 @@ Definidos em `server/prompts/templates.py`.
 | `priorizar_delegacias` | `estado` | `listar_delegacias_com_alerta` |
 | `gerar_atlas_vulnerabilidade` | `estado`, `meses` | `calcular_indice_vulnerabilidade` / `gerar_atlas_vulnerabilidade` |
 
-## 🔐 Camada de segurança transversal (Fatia 2)
+## 🔐 Camada de segurança transversal
 
 - **Perfis** (`server/security/perfis.py`): `publico < analista < investigador`.
   O perfil nunca é aceito como parâmetro de tool — é resolvido a partir do
-  contexto de autenticação (`server/security/contexto.py`). Nesta fatia, a
+  contexto de autenticação (`server/security/contexto.py`). Por ora, a
   resolução real de token (JWT/OAuth) ainda não está implementada; usa-se um
   placeholder via variável de ambiente `MCP_PERFIL_ATUAL`, documentado como
   decisão pendente do modelo.
@@ -221,7 +226,7 @@ Definidos em `server/prompts/templates.py`.
   aplicado a toda tool, registrando cliente/perfil/tool/parâmetros/timestamp
   na tabela `audit_log`.
 
-## ✅ Qualidade (Fatia 5)
+## ✅ Qualidade
 
 - **Contrato de validação Pydantic** (`server/schemas/`): cada tool tem um
   modelo de **entrada** (`entrada.py`) com as restrições de domínio declaradas
@@ -256,10 +261,8 @@ Definidos em `server/prompts/templates.py`.
 
 ```
 bnbo-mcp-agentic/
-├── test_client.py         # Testes diretos da lógica (services.linkage)
-├── test_tools.py          # Testes das funções *_tool do servidor
-├── server/                # === FUNÇÃO SERVIDOR ===
-│   ├── mcp_server.py      # Servidor MCP (STDIO/Streamable HTTP) — registra as tools do domínio
+├── server/                # === ADAPTADOR: PROTOCOLO MCP ===
+│   ├── mcp_server.py      # Entrypoint MCP (STDIO/Streamable HTTP) — registra tools/resources/prompts
 │   ├── tools/
 │   │   ├── p1_observatorio.py # Tools MCP do P1 (wrappers sobre services.stats)
 │   │   ├── p2_linkage.py    # Tools MCP do P2 (wrappers sobre services.linkage)
@@ -279,47 +282,52 @@ bnbo-mcp-agentic/
 │   │   └── templates.py     # Prompt Templates por tarefa
 │   └── security/
 │       ├── perfis.py        # Perfis publico/analista/investigador
-│       ├── contexto.py       # Resolução do perfil a partir do token (placeholder)
-│       ├── redacao.py         # Redação de PII em campos de texto livre
-│       └── auditoria.py        # Decorator com_auditoria + log em audit_log
-├── ml/
+│       ├── contexto.py      # Resolução do perfil a partir do token (placeholder)
+│       ├── redacao.py       # Redação de PII em campos de texto livre
+│       └── auditoria.py     # Decorator com_auditoria + log em audit_log
+├── client/                # === ADAPTADOR: CLIENTES MCP ===
+│   ├── stdio/
+│   │   └── mcp_client.py   # Cliente MCP oficial (STDIO)
+│   ├── http/
+│   │   └── mcp_client_http.py # Cliente MCP via Streamable HTTP
+│   └── reference/          # OPCIONAL: supervisor LangGraph (deps isoladas), usa a LLM do cliente
+│       ├── supervisor.py
+│       ├── run_supervisor.py
+│       └── requirements.txt
+├── services/              # === DOMÍNIO: serviços chamados pelas tools ===
 │   ├── embeddings.py      # e5-large + prefixos query:/passage: + cache Redis
 │   ├── linkage.py         # Busca vetorial, reranking, explicabilidade, DBSCAN
 │   ├── stats.py           # Anomalias estatísticas (z-score) e taxa de elucidação (P1)
 │   └── atlas.py           # IVC por hexágono H3, classificação Jenks, GeoJSON (P4)
-├── jobs/
+├── data/                  # === PERSISTÊNCIA ===
+│   ├── db.py              # Pool de conexões PostgreSQL/pgvector
+│   ├── schema.sql         # Tabelas bo/inquerito/tco/audit_log, índice HNSW
+│   └── synthetic.py       # Gerador de BOs sintéticos para dev/teste
+├── jobs/                  # === INFRA ASSÍNCRONA ===
 │   ├── celery_app.py      # Configuração do Celery (broker/backend Redis) + beat_schedule
 │   └── tasks.py           # Tasks reindexar_embeddings, calcular_alertas_noturnos
-├── data/
-│   ├── db.py               # Pool de conexões PostgreSQL/pgvector
-│   ├── schema.sql           # Tabelas bo/inquerito/tco/audit_log, índice HNSW
-│   └── synthetic.py          # Gerador de BOs sintéticos para dev/teste
-├── client/                 # === FUNÇÃO CLIENTE ===
-│   ├── stdio/
-│   │   └── mcp_client.py    # Cliente MCP oficial (STDIO)
-│   ├── http/
-│   │   └── mcp_client_http.py # Cliente MCP via Streamable HTTP
-│   └── reference/           # OPCIONAL: supervisor LangGraph (deps isoladas), usa a LLM do cliente
-│       ├── supervisor.py
-│       ├── run_supervisor.py
-│       └── requirements.txt
-├── docker-compose.yml      # PostgreSQL 16 (pgvector) + Redis 7
+├── tests/                 # Suíte pytest (test_security, test_stats, test_atlas, test_erros, …)
+├── test_client.py         # Harness direto da lógica de domínio (services.linkage)
+├── test_tools.py          # Harness das funções *_tool do servidor
+├── docs/                  # Documentação técnica (ex.: análise de auth MCP)
+├── docker-compose.yml     # PostgreSQL 16 (pgvector) + Redis 7
 ├── requirements.txt
 └── start_server.sh
 ```
 
-> Nota de simplificação (Fatia 0): a tabela `bo` é particionada por RANGE em
-> `ano` (não pelo composto `(estado, ano)` do modelo completo); `estado` fica
-> indexado em vez de particionado. Revisitar nas fatias de generalização.
+> Nota de simplificação (particionamento): a tabela `bo` é particionada por
+> RANGE em `ano` (não pelo composto `(estado, ano)` do modelo completo);
+> `estado` fica indexado em vez de particionado. Revisitar em uma
+> generalização futura.
 
-> Nota de simplificação (Fatia 2): `inquerito` e `tco` já existem no schema e
+> Nota de simplificação (vínculos e perfis): `inquerito` e `tco` já existem no schema e
 > se ligam a `bo` por `bo_id`, mas a ETL de matching para os casos em que o
 > `bo_id` está ausente (heurística por proximidade temporal/espacial/natureza)
 > ainda não foi implementada — fica para uma generalização futura da
 > ingestão. A resolução de perfil via token real (JWT/OAuth) também é um
 > placeholder, conforme descrito na seção de segurança.
 
-> Nota de simplificação (Fatia 3): o modelo original previa notificação de
+> Nota de simplificação (alertas por polling): o modelo original previa notificação de
 > alertas via push (SSE); como tools MCP seguem o padrão request/response,
 > `subscrever_alertas` lê um snapshot persistido em `alerta_observatorio`,
 > recalculado pelo job noturno `calcular_alertas_noturnos` (requer `celery
